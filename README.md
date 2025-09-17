@@ -164,6 +164,38 @@ Avoid Docker Desktop from App Center/Snap/Flatpak — it won’t pass through ho
 - Outgoing: dial a number from your SIP client; it should go out via your phone.
 - Incoming: call your mobile; your SIP client should ring as extension `1001`.
 
+## Linphone Config (Host)
+
+Install and point Linphone (Desktop or CLI) to Asterisk on the host, and use the provided configs.
+
+- Install Linphone
+  - Ubuntu 24.x: from App Center (or via apt/flatpak). Any recent Linphone Desktop or `linphonec` works.
+
+- Copy the config
+  - For Linphone Desktop (GUI):
+    - `mkdir -p "$HOME/.config/linphone"`
+    - `cp host-config/linphone/linphonerc "$HOME/.config/linphone/linphonerc"`
+  - For Linphone CLI (`linphonec`):
+    - `mkdir -p "$HOME/.config/linphone"`
+    - `cp host-config/linphone/linphonerc-asterisk "$HOME/.config/linphone/linphonerc"`
+
+- Adjust credentials if needed
+  - In `~/.config/linphone/linphonerc`, under `[proxy_0]` set:
+    - `reg_proxy=sip:127.0.0.1;transport=udp` (or your Asterisk IP)
+    - `reg_identity=sip:1001@127.0.0.1` (or your extension@server)
+  - Linphone will prompt for the password on first register unless you add an `[auth_info_*]` section.
+
+- About these config files
+  - They are full configs (not minimal). Linphone may auto-extend/modify them on first run — that’s expected.
+  - Personal/Sensitive values was redacted from the versions in this repo:
+    - `[sip] contact=...` replaced with a generic `sip:1001@127.0.0.1` to avoid exposing usernames/hosts.
+    - `[misc] uuid=...` replaced with `<uuid>`.
+    - `[sound] *_dev_id=...` changed to `PulseAudio Default` to avoid exposing specific hardware names.
+    - `[auth_info_0] ha1=...` replaced with `<ha1>` because it is a password hash.
+  - If you prefer persistent credentials delete the whole `[auth_info_*]` section and enter credentials via the UI once; Linphone will recreate it.
+
+- Notes
+  - You don’t need to remove Linphone’s auto-generated sections; keeping them is fine.
 
 ## Configuration Details
 
