@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+URI="${1:-}"; [ -n "$URI" ] || exit 0
+
+# Extract number from tel: URI and sanitize
+NUM="${URI#tel:}"
+NUM="$(printf '%s' "$NUM" | tr -d '[:space:]' | sed 's/[^0-9+]*//g')"
+
+# If it starts with '+', turn it to international with leading 00
+if [[ "$NUM" == +* ]]; then
+  NUM="00${NUM#+}"
+fi
+
+SIPURI="sip:${NUM}"
+
+# Invoke Linphone GUI directly via CLI command "call sip-address=..."
+exec env QT_QPA_PLATFORM=xcb linphone "call sip-address=${SIPURI}"

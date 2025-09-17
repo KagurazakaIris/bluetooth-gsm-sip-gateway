@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Linphone TEL Handler
+Comment=Handle tel: links with Linphone
+Type=Application
+Exec=$HOME/.local/bin/linphone-tel %u
+Terminal=false
+NoDisplay=true
+MimeType=x-scheme-handler/tel;

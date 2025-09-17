@@ -1,0 +1,21 @@
+services:
+  asterisk-mobile:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: asterisk-mobile
+    privileged: true
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    network_mode: host
+    pid: host
+    ipc: host
+    volumes:
+      - /dev:/dev
+      # (optional) reuse host Bluetooth pairings:
+      # - /var/lib/bluetooth:/var/lib/bluetooth
+    restart: unless-stopped
