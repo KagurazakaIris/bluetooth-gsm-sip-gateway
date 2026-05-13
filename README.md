@@ -11,7 +11,8 @@ It uses BlueZ + D-Bus for Bluetooth, and Asterisk to bridge GSM↔SIP audio.
 ## How It Works
 
 - A privileged container starts `dbus`, `bluetoothd` (BlueZ), and `asterisk`.
-- Asterisk loads `chan_mobile` and connects to your phone over Bluetooth RFCOMM/HFP.
+- The container reuses the host Bluetooth pairing database from `/var/lib/bluetooth`.
+- Asterisk loads `chan_mobile` and connects to your paired phone over Bluetooth RFCOMM/HFP.
 - Dialplan bridges calls:
   - Incoming GSM → rings SIP extension `1001`.
   - Outgoing from SIP → dials out using the paired mobile device.
@@ -24,7 +25,7 @@ Key files in this repo configure that flow:
 - `extensions.conf` — dialplan bridging SIP↔Mobile
 - `rtp.conf`, `logger.conf` — media and logging
 - `start.sh` — launches dbus, bluetoothd, and asterisk in-foreground
-- `host/linphone-tel`, `host/linphone-tel.desktop` — optional tel: link handler for Linphone
+- `host-config/tel_url_handler/linphone-tel`, `host-config/tel_url_handler/linphone-tel.desktop` — optional tel: link handler for Linphone
 
 
 ## Requirements
@@ -90,53 +91,9 @@ Avoid Docker Desktop from App Center/Snap/Flatpak — it won’t pass through ho
 
 ## Quick Start
 
-0) Host prep (first-time or as needed)
-- If you see conflicts with the host's `bluetoothd`, let the container own Bluetooth (dbus + bluetoothd) and claim the adapter. Many systems only need this once; after reboots it often keeps working without repeating these steps.
+0) Pair and trust your phone on the host
+- Do this on the host, not inside the container. Use your desktop Bluetooth UI or `bluetoothctl`:
   ```bash
-  # Give control to the container (only if needed)
-  sudo systemctl stop bluetooth || true
-  sudo systemctl disable bluetooth || true
-  sudo rfkill unblock bluetooth
-  sudo modprobe btusb bluetooth rfcomm
-  sudo hciconfig hci0 up
-  hciconfig -a   # look for UP RUNNING
-  ```
-
-  To use Bluetooth on the host again (e.g., to connect unrelated devices), stop the container and re-enable the host service:
-  ```bash
-  # Stop the container that owns the adapter
-  docker compose down
-
-  # Return control to the host
-  sudo systemctl enable bluetooth
-  sudo systemctl start bluetooth
-  sudo rfkill unblock bluetooth
-  sudo hciconfig hci0 up
-  # Or via bluetoothctl: power on
-  ```
-
-  When switching back to the container, repeat the "Give control to the container" snippet above if the host has reclaimed the adapter.
-
-1) Adjust Bluetooth addresses
-- Edit `chan_mobile.conf` (and `mobile.conf` for compatibility) and set:
-  - `[adapter] address=` to your host’s Bluetooth adapter MAC.
-  - `[redmi] address=` to your phone’s Bluetooth MAC.
-  - Keep `port=3` unless you know your HFP/RFCOMM channel differs. To discover your phone’s HFP/RFCOMM channel, run:
-    - `sudo sdptool records XX:XX:XX:XX:XX:XX | grep -i -A10 "Audio Gateway\|Handsfree"`
-    Replace the MAC and use the reported RFCOMM channel for `port`.
-
-2) Optional: share host pairings
-- If you already paired the phone on the host and want to reuse that, uncomment the bind in `docker-compose.yml`:
-  - `- /var/lib/bluetooth:/var/lib/bluetooth`
-
-3) Build and run
-- `docker compose build`
-- `docker compose up -d`
-
-4) First-time pairing (container)
-- Pair, trust, and connect your phone inside the container using `bluetoothctl`:
-  ```bash
-  docker exec -it asterisk-mobile bash
   bluetoothctl
   power on
   agent on
@@ -147,11 +104,47 @@ Avoid Docker Desktop from App Center/Snap/Flatpak — it won’t pass through ho
   connect XX:XX:XX:XX:XX:XX
   quit
   ```
-  Then verify from Asterisk:
+
+1) Adjust Bluetooth addresses
+- The repo tracks `chan_mobile.conf.example` and `mobile.conf.example`.
+- Copy them to local `chan_mobile.conf` and `mobile.conf` before editing MAC addresses. The local `.conf` files are ignored by git.
+- Edit `chan_mobile.conf` (and `mobile.conf` for compatibility) and set:
+  - `[adapter] address=` to your host’s Bluetooth adapter MAC.
+  - `[mobile_phone] address=` to your phone’s Bluetooth MAC.
+  - Keep `port=3` unless you know your HFP/RFCOMM channel differs. To discover your phone’s HFP/RFCOMM channel, run:
+    - `sudo sdptool records XX:XX:XX:XX:XX:XX | grep -i -A10 "Audio Gateway\|Handsfree"`
+    Replace the MAC and use the reported RFCOMM channel for `port`.
+
+2) Hand Bluetooth control to the container (first-time or as needed)
+- If you see conflicts with the host's `bluetoothd`, let the container own Bluetooth (dbus + bluetoothd) and claim the adapter.
   ```bash
-  asterisk -rvvvvv
-  mobile show devices   # should show Connected: Yes, State: Free
+  sudo systemctl stop bluetooth || true
+  sudo systemctl disable bluetooth || true
+  sudo rfkill unblock bluetooth
+  sudo modprobe btusb bluetooth rfcomm
+  sudo hciconfig hci0 up
+  hciconfig -a   # look for UP RUNNING
   ```
+
+  To use Bluetooth on the host again later, stop the container and re-enable the host service:
+  ```bash
+  docker compose down
+  sudo systemctl enable bluetooth
+  sudo systemctl start bluetooth
+  sudo rfkill unblock bluetooth
+  sudo hciconfig hci0 up
+  ```
+
+3) Build and run
+- `docker compose build`
+- `docker compose up -d`
+
+4) Verify the phone auto-connects
+- Watch logs: `docker logs -f asterisk-mobile`
+- Optional one-shot checks:
+  - `docker exec asterisk-mobile asterisk -rx "mobile show devices"`
+  - `docker exec asterisk-mobile asterisk -rx "mobile show connections"`
+- If the phone was already paired and trusted on the host, no manual pairing inside the container should be needed.
 
 5) Register your SIP client
 - Configure your SIP softphone to register to:
@@ -205,11 +198,11 @@ Asterisk SIP account: `sip.conf`
 
 Bluetooth gateway: `chan_mobile.conf` (and `mobile.conf`)
 - `[adapter] id=usb` and `address=<adapter-mac>` point to your adapter.
-- `[redmi] address=<phone-mac>`, `port=3`, `context=from-mobile`, `adapter=usb`.
+- `[mobile_phone] address=<phone-mac>`, `port=3`, `context=from-mobile`, `adapter=usb`.
 - On some phones the HFP/RFCOMM channel can differ; if calls fail to connect, scan channels with `sdptool browse <phone-mac>` and update `port` accordingly.
 
 Dialplan: `extensions.conf`
-- Global `MOBILE_IFACE=redmi` maps to your phone section.
+- Global `MOBILE_IFACE=mobile_phone` maps to your phone section.
 - `from-sip`: anything dialed `_X.` from SIP is sent to `Mobile/${MOBILE_IFACE}/${EXTEN}`.
 - `from-mobile`: incoming GSM calls dial `SIP/1001` to ring your softphone.
 
@@ -220,8 +213,7 @@ Logging: `logger.conf`
 - `console` and `full` log files enabled for diagnostics.
 
 Container: `docker-compose.yml`
-- `privileged: true`, `network_mode: host`, and `/dev` passthrough enable Bluetooth access.
-- Uncomment `/var/lib/bluetooth` bind to reuse host pairings.
+- `privileged: true`, `network_mode: host`, `/dev`, and `/var/lib/bluetooth` passthrough enable Bluetooth access and reuse the host pairing database.
 
 Entrypoint: `start.sh`
 - Starts a private system `dbus`, `bluetoothd --compat`, then `asterisk -f -vvv`.
@@ -229,7 +221,7 @@ Entrypoint: `start.sh`
 
 ## Operating Asterisk
 
-Attach to the running Asterisk CLI:
+Optional: attach to the running Asterisk CLI for debugging:
 - `docker exec -it asterisk-mobile asterisk -rvvvvv`
 
 Useful commands:
@@ -242,7 +234,7 @@ Useful commands:
 
 Logs:
 - `docker logs -f asterisk-mobile`
-- Inside container: check `/var/log/asterisk/` if enabled by `logger.conf`.
+- Container log files are also available under `/var/log/asterisk/` if you need deeper debugging.
 
 
 ## Linphone tel: Link Handler (Optional)
@@ -250,15 +242,15 @@ Logs:
 If you use Linphone on the host, you can make `tel:` links dial via Linphone automatically.
 
 1) Create a small helper:
-- Save `host/linphone-tel` to `~/.local/bin/linphone-tel` and make it executable:
+- Save `host-config/tel_url_handler/linphone-tel` to `~/.local/bin/linphone-tel` and make it executable:
   - `mkdir -p ~/.local/bin`
-  - `cp host/linphone-tel ~/.local/bin/linphone-tel`
+  - `cp host-config/tel_url_handler/linphone-tel ~/.local/bin/linphone-tel`
   - `chmod +x ~/.local/bin/linphone-tel`
 
 2) Register the desktop handler:
-- Copy `host/linphone-tel.desktop` to `~/.local/share/applications/`:
+- Copy `host-config/tel_url_handler/linphone-tel.desktop` to `~/.local/share/applications/`:
   - `mkdir -p ~/.local/share/applications`
-  - `cp host/linphone-tel.desktop ~/.local/share/applications/`
+  - `cp host-config/tel_url_handler/linphone-tel.desktop ~/.local/share/applications/`
 - Update and set default handler:
   - `update-desktop-database ~/.local/share/applications/`
   - `xdg-mime default linphone-tel.desktop x-scheme-handler/tel`
@@ -290,11 +282,12 @@ Switching Bluetooth control (host ↔ container)
 Bluetooth doesn’t start in container
 - Check container privileges match `docker-compose.yml`.
 - Inspect `docker logs -f asterisk-mobile` after start.
-- Inside container, run `rfkill list`, `hciconfig -a`, `dmesg | tail -n 100`.
+- Run one-shot diagnostics with `docker exec asterisk-mobile rfkill list`, `docker exec asterisk-mobile hciconfig -a`, and `docker exec asterisk-mobile dmesg | tail -n 100`.
 
 Phone not pairing or connecting
-- Use `bluetoothctl` to `trust` and `connect` the phone.
-- If using host pairings, ensure `/var/lib/bluetooth` is bind‑mounted and permissions preserved.
+- Pair and trust the phone on the host first while the host `bluetoothd` service is running.
+- Ensure `/var/lib/bluetooth` is bind-mounted into the container and the MAC addresses in `chan_mobile.conf` match the host bond.
+- After host pairing, stop the host `bluetoothd` service before starting the container so the container can claim the adapter.
 
 Outgoing calls fail immediately
 - Verify `port` in `chan_mobile.conf` matches phone’s HFP/RFCOMM channel (`sdptool browse <mac>`).
@@ -309,8 +302,8 @@ SIP client won’t register
 - `sip show peers` should list `1001` as `OK` with latency.
 
 Asterisk module not loading `chan_mobile`
-- Ensure your Asterisk build includes `chan_mobile` on Ubuntu 18.04 package.
-- If needed, install `asterisk` extras or build the module; review logs for load errors.
+- Verify the image build completed successfully and `chan_mobile.so` exists in `/usr/lib/asterisk/modules/`.
+- Run `docker exec asterisk-mobile asterisk -rx "module show like chan_mobile.so"` and review Asterisk logs for load errors.
 
 
 ## Security Notes
@@ -320,25 +313,12 @@ Asterisk module not loading `chan_mobile`
 - Keep OS and Docker updated. Ubuntu 18.04 is EOL; for long‑term use, consider updating the base and re‑validating `chan_mobile`.
 
 
-## File Reference
-
-- `docker-compose.yml` — container runtime configuration
-- `Dockerfile` — builds image with BlueZ + Asterisk
-- `start.sh` — supervised startup for dbus, bluetoothd, asterisk
-- `chan_mobile.conf`, `mobile.conf` — Bluetooth adapter/phone mapping
-- `sip.conf` — SIP account `1001` for your softphone
-- `extensions.conf` — dialplan for in/out bridging
-- `rtp.conf` — RTP port range and ICE/TURN options (many commented)
-- `logger.conf` — logging setup (console/full/messages)
-- `host/linphone-tel`, `host/linphone-tel.desktop` — tel: handler for Linphone
-
-
 ## FAQ
 
 - Do I need both `chan_mobile.conf` and `mobile.conf`?
   - Some Asterisk builds use `chan_mobile.conf`. This repo includes both (same content) for compatibility; adjust both or prefer `chan_mobile.conf`.
-- Can I avoid pairing in the container?
-  - Yes, by sharing `/var/lib/bluetooth` from the host. Ensure the phone is paired/trusted on the host and MACs match your config.
+- Do I need to pair inside the container?
+  - No. Pair and trust the phone on the host first; the container reuses `/var/lib/bluetooth` and auto-attempts the connection on startup.
 - Which SIP client should I use?
   - Linphone, baresip, or any basic SIP client. Start simple: PC and container on the same host with UDP transport.
 

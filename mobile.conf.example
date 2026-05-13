@@ -5,7 +5,7 @@ interval=30
 id=usb
 address=XX:XX:XX:XX:XX:XX
 
-[redmi]
+[mobile_phone]
 address=XX:XX:XX:XX:XX:XX
 port=3
 context=from-mobile
