@@ -24,6 +24,8 @@
 
 ## 启动
 
+本地构建并启动：
+
 ```bash
 docker compose up -d --build
 ```
@@ -45,16 +47,47 @@ http://<开发板IP>:8080
 
 不需要使用特殊启动脚本；即使忘记操作方式并直接执行 `docker compose up -d`，入口脚本也会运行相同的自动交接与修复流程。
 
+## GHCR 镜像
+
+仓库包含 `.github/workflows/publish-ghcr.yml`，GitHub Actions 仅构建 `linux/amd64`：
+
+- 推送到 `master`：发布 `latest` 和 `sha-<提交>` 标签；
+- 推送 `v*` Git 标签：发布对应版本标签；
+- Pull Request：只验证镜像构建，不推送；
+- 可在 Actions 页面手动触发构建。
+
+镜像地址自动使用小写形式：
+
+```text
+ghcr.io/<仓库所有者>/<仓库名>:latest
+```
+
+使用 GHCR 镜像时，在 `.env` 设置实际地址：
+
+```bash
+GATEWAY_IMAGE=ghcr.io/<仓库所有者>/<仓库名>:latest
+```
+
+然后执行：
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+工作流使用仓库自带的 `GITHUB_TOKEN` 和 `packages: write` 权限，不需要额外创建 GHCR 密钥。首次发布后可在 GitHub Packages 中调整镜像可见性。
+
 ## 可选配置
 
 复制示例环境变量：
 
 ```bash
-cp gateway.env.example .env
+cp config/gateway.env.example .env
 ```
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
+| `GATEWAY_IMAGE` | `bluetooth-gsm-sip-gateway:local` | 本地镜像名或 GHCR 完整镜像地址 |
 | `GATEWAY_WEB_PORT` | `8080` | Web 管理服务端口 |
 | `GATEWAY_ADMIN_TOKEN` | 空 | 设置后保护所有修改接口，浏览器页面中需填写相同令牌 |
 | `GATEWAY_RESTORE_HOST_ON_STOP` | `1` | 容器正常停止时恢复宿主机蓝牙；设为 `0` 保持交接状态 |
@@ -73,9 +106,10 @@ cp gateway.env.example .env
 
 - Docker Compose 配置：`docker-compose.yml`
 - 容器镜像配置：`Dockerfile`
-- 环境变量示例：`gateway.env.example`
-- Web 与管理后端：`gateway-manager/`
-- Asterisk 基础配置：仓库根目录的 `sip.conf`、`extensions.conf`、`rtp.conf`、`logger.conf`
+- 环境变量示例：`config/gateway.env.example`
+- Web 与管理后端：`app/`
+- 容器入口与蓝牙控制脚本：`scripts/`
+- Asterisk 基础配置：`config/asterisk/`
 - 手机与 SIP 运行配置：Docker 卷 `gateway-state`
 - BlueZ 配对记录：宿主机 `/var/lib/bluetooth`
 

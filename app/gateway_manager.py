@@ -15,9 +15,9 @@ from urllib.parse import urlparse
 
 STATE_DIR = Path(os.environ.get("GATEWAY_STATE_DIR", "/var/lib/gateway"))
 SETTINGS_FILE = STATE_DIR / "settings.json"
-WEB_ROOT = Path("/opt/gateway-manager/web")
-CONTROL = "/opt/gateway-manager/gateway-control.sh"
-HOST_CONTROL = "/opt/gateway-manager/host-bluetooth-control.sh"
+WEB_ROOT = Path("/opt/gateway/app/web")
+CONTROL = "/opt/gateway/scripts/gateway-control.sh"
+HOST_CONTROL = "/opt/gateway/scripts/host-bluetooth-control.sh"
 MAC_RE = re.compile(r"^[0-9A-F]{2}(?::[0-9A-F]{2}){5}$")
 SIP_USER_RE = re.compile(r"^[A-Za-z0-9_.-]{1,31}$")
 
@@ -227,7 +227,7 @@ def write_mobile_config(adapter_mac, phone_mac, channel):
 
 
 def clear_mobile_config():
-    content = Path("/opt/gateway-manager/chan_mobile.unconfigured.conf").read_text(encoding="utf-8")
+    content = Path("/opt/gateway/config/asterisk/chan_mobile.unconfigured.conf").read_text(encoding="utf-8")
     for path in (Path("/etc/asterisk/chan_mobile.conf"), Path("/etc/asterisk/mobile.conf")):
         temporary = path.with_suffix(path.suffix + ".tmp")
         temporary.write_text(content, encoding="utf-8")

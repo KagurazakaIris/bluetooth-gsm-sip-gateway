@@ -1,5 +1,6 @@
 services:
   asterisk-mobile:
+    image: ${GATEWAY_IMAGE:-bluetooth-gsm-sip-gateway:local}
     build:
       context: .
       dockerfile: Dockerfile

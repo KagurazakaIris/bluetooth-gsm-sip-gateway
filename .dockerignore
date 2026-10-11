@@ -1,6 +1,11 @@
 .git
+.github
 .idea
+.vscode
 .env
 asterisk.tgz
 __pycache__/
 *.pyc
+README.md
+docker-compose.yml
+config/gateway.env.example

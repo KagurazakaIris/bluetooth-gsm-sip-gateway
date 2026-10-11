@@ -2,7 +2,7 @@
 set -euo pipefail
 
 STATE_DIR=${GATEWAY_STATE_DIR:-/var/lib/gateway}
-CONTROL=/opt/gateway-manager/gateway-control.sh
+CONTROL=/opt/gateway/scripts/gateway-control.sh
 WEB_PID=""
 ASTERISK_PID=""
 
@@ -93,11 +93,11 @@ if ! wait_for_hci 5; then
   echo "[!] 当前没有可用蓝牙适配器，继续启动诊断页面。"
 fi
 
-PYTHONPATH=/opt/gateway-manager python3 -c \
+PYTHONPATH=/opt/gateway/app python3 -c \
   'from gateway_manager import regenerate_saved_config; regenerate_saved_config()' || true
 
 echo "[*] 启动 Web 管理服务..."
-python3 /opt/gateway-manager/gateway_manager.py &
+python3 /opt/gateway/app/gateway_manager.py &
 WEB_PID=$!
 
 echo "[*] 启动 Asterisk..."

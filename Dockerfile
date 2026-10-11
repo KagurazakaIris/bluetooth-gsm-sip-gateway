@@ -67,23 +67,22 @@ RUN mkdir -p /var/run/dbus /var/lib/bluetooth /var/run/asterisk && \
     chown asterisk:asterisk /var/run/asterisk
 
 # 基础配置，蓝牙地址由管理服务在运行时生成
-COPY gateway-manager/chan_mobile.unconfigured.conf /etc/asterisk/mobile.conf
-COPY gateway-manager/chan_mobile.unconfigured.conf /etc/asterisk/chan_mobile.conf
-COPY extensions.conf /etc/asterisk/extensions.conf
-COPY logger.conf /etc/asterisk/logger.conf
-COPY rtp.conf /etc/asterisk/rtp.conf
-COPY sip.conf /etc/asterisk/sip.conf
+COPY config/asterisk /opt/gateway/config/asterisk
+RUN cp /opt/gateway/config/asterisk/chan_mobile.unconfigured.conf /etc/asterisk/mobile.conf && \
+    cp /opt/gateway/config/asterisk/chan_mobile.unconfigured.conf /etc/asterisk/chan_mobile.conf && \
+    cp /opt/gateway/config/asterisk/extensions.conf /etc/asterisk/extensions.conf && \
+    cp /opt/gateway/config/asterisk/logger.conf /etc/asterisk/logger.conf && \
+    cp /opt/gateway/config/asterisk/rtp.conf /etc/asterisk/rtp.conf && \
+    cp /opt/gateway/config/asterisk/sip.conf /etc/asterisk/sip.conf
 
 # 蓝牙管理服务和宿主机控制权交接脚本
-COPY gateway-manager /opt/gateway-manager
+COPY app /opt/gateway/app
+COPY scripts /opt/gateway/scripts
 RUN chmod +x \
-        /opt/gateway-manager/gateway_manager.py \
-        /opt/gateway-manager/gateway-control.sh \
-        /opt/gateway-manager/host-bluetooth-control.sh && \
+        /opt/gateway/app/gateway_manager.py \
+        /opt/gateway/scripts/entrypoint.sh \
+        /opt/gateway/scripts/gateway-control.sh \
+        /opt/gateway/scripts/host-bluetooth-control.sh && \
     mkdir -p /var/lib/gateway
 
-# 容器入口脚本
-COPY start.sh /start.sh
-RUN chmod +x /start.sh
-
-ENTRYPOINT ["/start.sh"]
+ENTRYPOINT ["/opt/gateway/scripts/entrypoint.sh"]

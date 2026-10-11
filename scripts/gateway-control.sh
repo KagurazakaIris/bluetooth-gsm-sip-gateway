@@ -4,7 +4,7 @@ set -euo pipefail
 STATE_DIR=${GATEWAY_STATE_DIR:-/var/lib/gateway}
 BT_PID_FILE="$STATE_DIR/bluetoothd.pid"
 AGENT_PID_FILE="$STATE_DIR/bt-agent.pid"
-HOST_CONTROL=/opt/gateway-manager/host-bluetooth-control.sh
+HOST_CONTROL=/opt/gateway/scripts/host-bluetooth-control.sh
 
 stop_pid_file() {
   local file=$1
