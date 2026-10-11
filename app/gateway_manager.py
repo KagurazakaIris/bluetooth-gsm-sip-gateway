@@ -184,6 +184,16 @@ def discovered_devices():
     return [device_info(mac) for mac in addresses]
 
 
+def wait_for_device(mac, timeout=15):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        output = run(["bluetoothctl", "info", mac], timeout=8, check=False)
+        if f"Device {mac}" in output:
+            return
+        time.sleep(0.5)
+    raise RuntimeError(f"解除旧绑定后未重新发现设备 {mac}，请确认手机蓝牙仍可被发现")
+
+
 def detect_hfp_channel(mac):
     output = run(["sdptool", "browse", mac], timeout=25, check=False)
     in_hfp_gateway = False
@@ -353,8 +363,10 @@ def async_operation(kind, message, target):
     def worker():
         try:
             result = target()
+            print(f"[operation:{kind}] {result or '操作完成'}", flush=True)
             operations.finish(message=str(result or "操作完成"))
         except Exception as exc:
+            print(f"[operation:{kind}] 失败: {exc}", flush=True)
             operations.finish(error=str(exc))
 
     threading.Thread(target=worker, daemon=True, name="gateway-" + kind).start()
@@ -384,16 +396,30 @@ def start_pair(mac):
         run(["bluetoothctl", "power", "on"], timeout=8)
         run(["bluetoothctl", "pairable", "on"], timeout=8)
         run(["bluetoothctl", "discoverable", "on"], timeout=8, check=False)
+        scanning = False
         try:
-            if not device_info(mac)["paired"]:
-                output = run(["bluetoothctl", "pair", mac], timeout=50)
+            if device_info(mac)["paired"]:
+                output = run(["bluetoothctl", "remove", mac], timeout=15)
                 if "Failed" in output:
                     raise RuntimeError(output)
+                output = run(["bluetoothctl", "scan", "on"], timeout=8)
+                if "Failed" in output:
+                    raise RuntimeError(output)
+                scanning = True
+                wait_for_device(mac)
+            output = run(
+                ["bluetoothctl", "--agent", "NoInputNoOutput", "pair", mac],
+                timeout=50,
+            )
+            if "Failed" in output:
+                raise RuntimeError(output)
             run(["bluetoothctl", "trust", mac], timeout=10)
             run(["bluetoothctl", "connect", mac], timeout=20, check=False)
             channel, detected = configure_phone(mac)
             return f"配对完成，HFP 通道 {channel}" + ("（自动检测）" if detected else "（默认值，请按需修改）")
         finally:
+            if scanning:
+                run(["bluetoothctl", "scan", "off"], timeout=8, check=False)
             run(["bluetoothctl", "pairable", "off"], timeout=8, check=False)
             run(["bluetoothctl", "discoverable", "off"], timeout=8, check=False)
 
