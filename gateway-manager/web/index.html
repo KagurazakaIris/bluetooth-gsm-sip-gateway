@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Linux 蓝牙 SIP 网关</title>
+  <style>
+    :root{color-scheme:light;--ok:#176b2c;--bad:#a11;--line:#999;--notice:#fff4c2}
+    *{box-sizing:border-box}body{font:15px system-ui,sans-serif;max-width:760px;margin:20px auto;padding:0 12px 44px;color:#222;background:#fff}
+    h1{font-size:25px;margin-bottom:6px}.summary{margin-top:0;color:#444}.statusline{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+    .pill{border:1px solid #aaa;border-radius:2px;padding:4px 8px;background:#fafafa}.ok{color:var(--ok)}.bad{color:var(--bad)}
+    fieldset{margin:14px 0;padding:12px;border:1px solid var(--line)}legend{font-weight:700;padding:0 5px}label{display:block;margin:8px 0}
+    input{padding:6px;border:1px solid #999;background:#fff;width:300px;max-width:95%}button{margin:5px 5px 5px 0;padding:7px 11px;border:1px solid #777;border-radius:2px;background:#eee;color:#111;cursor:pointer}
+    button.primary{background:#333;color:#fff;border-color:#222}button.danger{color:#8b1111}button:disabled{opacity:.55;cursor:not-allowed}
+    table{border-collapse:collapse;width:100%;margin-top:8px}th,td{border:1px solid #bbb;padding:6px;text-align:left}th{background:#f3f3f3}
+    .notice{background:var(--notice);border:1px solid #e1c45b;padding:8px}.hint{color:#666;font-size:13px;margin:5px 0}.message{white-space:pre-wrap}
+    .kv{display:grid;grid-template-columns:155px 1fr;gap:5px 12px;margin:8px 0}.kv span:nth-child(odd){color:#666}
+    @media(max-width:520px){.kv{grid-template-columns:1fr}.kv span:nth-child(even){margin-bottom:5px}th:nth-child(3),td:nth-child(3){display:none}}
+  </style>
+</head>
+<body>
+  <h1>Linux 蓝牙 SIP 网关</h1>
+  <p id="summary" class="summary">正在读取运行状态...</p>
+  <div class="statusline">
+    <span id="hostBadge" class="pill">宿主机交接未知</span>
+    <span id="btBadge" class="pill">蓝牙未知</span>
+    <span id="astBadge" class="pill">Asterisk 未知</span>
+  </div>
+
+  <fieldset>
+    <legend>系统与蓝牙适配器</legend>
+    <div class="kv">
+      <span>适配器</span><strong id="adapter">-</strong>
+      <span>宿主机服务</span><span id="hostService">-</span>
+      <span>控制权</span><span id="handoff">-</span>
+      <span>配对策略</span><span>仅扫描或配对期间临时开放</span>
+    </div>
+    <button id="repair" type="button">一键修复蓝牙环境</button>
+    <button id="returnHost" class="danger" type="button">归还蓝牙给宿主机</button>
+    <p class="hint">直接运行 docker compose 即可。修复会停止宿主机蓝牙服务、重置 HCI，并重启容器内 BlueZ 与 chan_mobile。</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>蓝牙手机</legend>
+    <p id="phoneState">尚未选择手机</p>
+    <button id="scan" class="primary" type="button">扫描 10 秒</button>
+    <button id="connect" type="button">重新连接</button>
+    <button id="unpair" class="danger" type="button">解除配对</button>
+    <table>
+      <thead><tr><th>设备名</th><th>MAC</th><th>信号</th><th>操作</th></tr></thead>
+      <tbody id="devices"><tr><td colspan="4">点击扫描查找手机</td></tr></tbody>
+    </table>
+    <p class="notice">点击“配对”后，请在手机端确认配对请求；完成后会自动信任、连接、探测 HFP 通道并写入 Asterisk 配置。</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>chan_mobile 配置</legend>
+    <form id="mobileConfig">
+      <label>手机 MAC <input id="phoneMac" name="mac" placeholder="扫描配对后自动填写" maxlength="17" required></label>
+      <label>HFP RFCOMM 通道 <input id="hfpChannel" name="channel" type="number" min="1" max="30" value="3" required></label>
+      <button type="submit">保存并重载</button>
+      <button id="reload" type="button">重新加载 chan_mobile</button>
+    </form>
+    <p id="channelHint" class="hint">配对后自动探测；探测失败时使用通道 3，可在此修正。</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>运行状态</legend>
+    <div class="kv">
+      <span>chan_mobile</span><span id="moduleState">-</span>
+      <span>手机链路</span><span id="linkState">-</span>
+      <span>当前操作</span><span id="operationState">-</span>
+    </div>
+    <pre id="asteriskOutput" class="hint message"></pre>
+  </fieldset>
+
+  <fieldset>
+    <legend>SIP 软电话</legend>
+    <form id="sipConfig">
+      <label>分机账号 <input id="sipUser" name="user" maxlength="31" value="1001" required></label>
+      <label>分机密码 <input id="sipSecret" name="secret" type="password" maxlength="128" autocomplete="new-password" placeholder="留空保留现有密码"></label>
+      <button type="submit">保存并重载 SIP</button>
+    </form>
+    <p id="sipHint" class="hint">软电话使用本机 IP、UDP 5060 端口和这里设置的账号登录。</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>管理访问</legend>
+    <label>管理令牌 <input id="token" type="password" autocomplete="current-password" placeholder="仅在 Compose 中配置令牌后填写"></label>
+    <button id="saveToken" type="button">保存到当前浏览器</button>
+    <p class="hint">令牌只保存在浏览器 localStorage，不会写入页面或状态接口。</p>
+  </fieldset>
+
+  <p id="message" class="message"></p>
+
+  <script>
+    const $=id=>document.getElementById(id);
+    let lastStatus=null;
+    $('token').value=localStorage.getItem('gatewayAdminToken')||'';
+    $('saveToken').onclick=()=>{localStorage.setItem('gatewayAdminToken',$('token').value);showMessage('管理令牌已保存到当前浏览器')};
+
+    function showMessage(text,bad=false){$('message').textContent=text||'';$('message').className='message '+(bad?'bad':'ok')}
+    function setBadge(id,text,ok){const e=$(id);e.textContent=text;e.className='pill '+(ok?'ok':'bad')}
+    async function api(path,data={}){
+      const headers={'Content-Type':'application/json'};
+      const token=localStorage.getItem('gatewayAdminToken')||'';
+      if(token)headers.Authorization='Bearer '+token;
+      const response=await fetch(path,{method:'POST',headers,body:JSON.stringify(data)});
+      const result=await response.json();
+      if(!response.ok)throw Error(result.error||('HTTP '+response.status));
+      return result;
+    }
+    function action(path,data,message){return api(path,data).then(r=>{showMessage(r.message||message);refresh()}).catch(e=>showMessage(e.message,true))}
+    function button(text,handler,disabled=false){const b=document.createElement('button');b.type='button';b.textContent=text;b.disabled=disabled;b.onclick=handler;return b}
+
+    $('scan').onclick=()=>action('/api/bluetooth/scan',{},'扫描已启动');
+    $('repair').onclick=()=>action('/api/system/repair',{},'修复已启动');
+    $('reload').onclick=()=>action('/api/system/reload',{},'chan_mobile 已重载');
+    $('returnHost').onclick=()=>{if(confirm('归还后网关蓝牙将停止，确认继续？'))action('/api/system/return',{},'蓝牙已归还宿主机')};
+    $('connect').onclick=()=>action('/api/bluetooth/connect',{mac:$('phoneMac').value},'连接命令已执行');
+    $('unpair').onclick=()=>{if(confirm('确认解除当前手机的配对？'))action('/api/bluetooth/unpair',{mac:$('phoneMac').value},'已解除配对')};
+    $('mobileConfig').onsubmit=e=>{e.preventDefault();action('/api/bluetooth/configure',{mac:$('phoneMac').value,channel:Number($('hfpChannel').value)},'配置已保存并重载')};
+    $('sipConfig').onsubmit=e=>{e.preventDefault();action('/api/sip/configure',{user:$('sipUser').value,secret:$('sipSecret').value},'SIP 配置已保存并重载').then(()=>$('sipSecret').value='')};
+
+    async function refresh(){
+      try{
+        const response=await fetch('/api/status',{cache:'no-store'});const s=await response.json();if(!response.ok)throw Error(s.error||'状态读取失败');lastStatus=s;
+        $('summary').textContent='管理地址 '+location.host+' · '+(s.phone&&s.phone.name?s.phone.name:'尚未配置手机');
+        $('adapter').textContent=(s.adapter.address||'未检测到')+(s.adapter.powered?' · 已开启':' · 未开启');
+        $('hostService').textContent=(s.host.manager||'unknown')+' · '+(s.host.service_active||'unknown')+' · '+(s.host.service_enabled||'unknown');
+        $('handoff').textContent=s.host.handoff_saved?'已持久化交接给容器':'尚未记录交接状态';
+        setBadge('hostBadge',s.host.handoff_saved?'蓝牙已交接':'蓝牙未交接',!!s.host.handoff_saved);
+        setBadge('btBadge',s.adapter.powered?'适配器已开启':'适配器不可用',!!s.adapter.powered);
+        setBadge('astBadge',s.asterisk.ready?'Asterisk 正常':'Asterisk 未就绪',!!s.asterisk.ready);
+        const p=s.phone;
+        $('phoneState').textContent=p?(p.name+' · '+p.mac+' · '+(p.paired?'已配对':'未配对')+' · '+(p.trusted?'已信任':'未信任')+' · '+(p.connected?'已连接':'未连接')):'尚未选择手机';
+        $('linkState').textContent=p&&p.connected?'Connected':'Disconnected';$('linkState').className=p&&p.connected?'ok':'bad';
+        $('phoneMac').value=s.settings.phone_mac||$('phoneMac').value;$('hfpChannel').value=s.settings.hfp_channel||3;
+        $('channelHint').textContent=s.settings.hfp_channel_detected?'当前通道由 SDP 自动检测':'当前使用默认或手动指定的通道';
+        $('sipUser').value=s.settings.sip_user||'1001';$('sipHint').textContent=s.settings.sip_has_secret?'已保存 SIP 密码，留空可保持不变':'尚未通过网页保存 SIP 密码；当前使用镜像内初始配置';
+        $('moduleState').textContent=s.asterisk.chan_mobile?'Running':'Stopped';$('moduleState').className=s.asterisk.chan_mobile?'ok':'bad';
+        $('asteriskOutput').textContent=s.asterisk.mobile_output||'';
+        const op=s.operation;$('operationState').textContent=op.kind==='none'?(op.error||op.message||'空闲'):(op.message||op.kind);
+        if(op.error)showMessage(op.error,true);
+        const body=$('devices');body.replaceChildren();
+        if(!s.devices.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=4;td.textContent='点击扫描查找手机';tr.append(td);body.append(tr)}
+        for(const d of s.devices){const tr=document.createElement('tr');for(const value of [d.name||'未知设备',d.mac,d.rssi===null?'-':d.rssi+' dBm']){const td=document.createElement('td');td.textContent=value;tr.append(td)}const td=document.createElement('td');td.append(button(d.mac===s.settings.phone_mac?'当前设备':(d.paired?'使用此设备':'配对'),()=>action('/api/bluetooth/pair',{mac:d.mac},d.paired?'正在配置设备':'配对已启动'),op.kind!=='none'||d.mac===s.settings.phone_mac));tr.append(td);body.append(tr)}
+        const busy=op.kind!=='none';for(const id of ['scan','repair','connect','unpair','reload'])$(id).disabled=busy;
+      }catch(e){showMessage(e.message,true);setBadge('btBadge','状态读取失败',false)}
+    }
+    refresh();setInterval(()=>{if(!document.hidden)refresh()},2000);
+  </script>
+</body>
+</html>

@@ -3,7 +3,7 @@ FROM ubuntu:18.04
 ENV DEBIAN_FRONTEND=noninteractive
 ARG ASTERISK_VERSION=13.18.3
 
-# Tooling + BlueZ + dbus + Asterisk + build/runtime dependencies
+# 工具、BlueZ、D-Bus、Asterisk 及编译和运行依赖
 RUN apt-get update && \
     apt-get install -y \
         autoconf \
@@ -35,7 +35,10 @@ RUN apt-get update && \
         libxml2-dev \
         nano \
         pkg-config \
+        procps \
+        python3 \
         rfkill \
+        util-linux \
         uuid-dev \
         vim \
         wget \
@@ -44,8 +47,8 @@ RUN apt-get update && \
         asterisk \
     && rm -rf /var/lib/apt/lists/*
 
-# Rebuild Asterisk from official source and enable chan_mobile explicitly.
-# Clean out distro-shipped modules first so we do not keep mismatched .so files.
+# 从官方源码重建 Asterisk，并显式启用 chan_mobile。
+# 先清理发行版模块，避免残留 ABI 不匹配的动态库。
 RUN rm -rf /usr/lib/asterisk/modules/* && \
     curl -L "https://downloads.asterisk.org/pub/telephony/asterisk/old-releases/asterisk-${ASTERISK_VERSION}.tar.gz" -o /tmp/asterisk.tar.gz && \
     mkdir -p /tmp/asterisk-src && \
@@ -59,19 +62,27 @@ RUN rm -rf /usr/lib/asterisk/modules/* && \
     test -f /usr/lib/asterisk/modules/chan_mobile.so && \
     rm -rf /tmp/asterisk-src /tmp/asterisk.tar.gz
 
-# Create required runtime dirs (dbus, bluetooth, asterisk)
+# 创建 D-Bus、蓝牙和 Asterisk 运行目录
 RUN mkdir -p /var/run/dbus /var/lib/bluetooth /var/run/asterisk && \
     chown asterisk:asterisk /var/run/asterisk
 
-# Configs (can be overridden via bind-mounts)
-COPY mobile.conf /etc/asterisk/mobile.conf
-COPY chan_mobile.conf /etc/asterisk/chan_mobile.conf
+# 基础配置，蓝牙地址由管理服务在运行时生成
+COPY gateway-manager/chan_mobile.unconfigured.conf /etc/asterisk/mobile.conf
+COPY gateway-manager/chan_mobile.unconfigured.conf /etc/asterisk/chan_mobile.conf
 COPY extensions.conf /etc/asterisk/extensions.conf
 COPY logger.conf /etc/asterisk/logger.conf
 COPY rtp.conf /etc/asterisk/rtp.conf
 COPY sip.conf /etc/asterisk/sip.conf
 
-# Entry script
+# 蓝牙管理服务和宿主机控制权交接脚本
+COPY gateway-manager /opt/gateway-manager
+RUN chmod +x \
+        /opt/gateway-manager/gateway_manager.py \
+        /opt/gateway-manager/gateway-control.sh \
+        /opt/gateway-manager/host-bluetooth-control.sh && \
+    mkdir -p /var/lib/gateway
+
+# 容器入口脚本
 COPY start.sh /start.sh
 RUN chmod +x /start.sh
 

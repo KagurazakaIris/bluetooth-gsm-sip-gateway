@@ -1,0 +1,6 @@
+.git
+.idea
+.env
+asterisk.tgz
+__pycache__/
+*.pyc

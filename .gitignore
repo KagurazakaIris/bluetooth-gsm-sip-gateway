@@ -176,3 +176,9 @@ fabric.properties
 
 chan_mobile.conf
 mobile.conf
+
+# 本地运行配置与参考压缩包
+.env
+/asterisk.tgz
+__pycache__/
+*.pyc

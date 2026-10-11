@@ -1,327 +1,113 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+STATE_DIR=${GATEWAY_STATE_DIR:-/var/lib/gateway}
+CONTROL=/opt/gateway-manager/gateway-control.sh
+WEB_PID=""
+ASTERISK_PID=""
+
+mkdir -p "$STATE_DIR" /var/run/dbus /var/run/asterisk /var/lib/bluetooth
+chown asterisk:asterisk /var/run/asterisk
+
+cleanup() {
+  if [ -n "$WEB_PID" ]; then
+    kill "$WEB_PID" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$ASTERISK_PID" ]; then
+    kill "$ASTERISK_PID" >/dev/null 2>&1 || true
+  fi
+  if [ "${GATEWAY_RESTORE_HOST_ON_STOP:-1}" = "1" ]; then
+    "$CONTROL" return-to-host >/dev/null 2>&1 || true
+  else
+    "$CONTROL" stop-bluetooth >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT TERM INT
+
 wait_for_hci() {
   local attempts=${1:-30}
-  local delay=${2:-2}
-  local i
-
   for ((i = 1; i <= attempts; i++)); do
     if hciconfig -a 2>/dev/null | grep -q '^hci'; then
       return 0
     fi
-    echo "[*] Waiting for Bluetooth adapter (${i}/${attempts})..."
-    sleep "$delay"
+    echo "[*] 等待蓝牙适配器 (${i}/${attempts})..."
+    sleep 2
   done
-
   return 1
 }
 
-wait_for_asterisk_cli() {
-  local attempts=${1:-30}
-  local delay=${2:-1}
-  local i
-
-  for ((i = 1; i <= attempts; i++)); do
+wait_for_asterisk() {
+  for ((i = 1; i <= 30; i++)); do
     if /usr/sbin/asterisk -rx "core waitfullybooted" >/dev/null 2>&1; then
       return 0
     fi
-    sleep "$delay"
+    sleep 1
   done
-
   return 1
 }
 
-ensure_chan_mobile_manual_load() {
-  if ! grep -Eq '^[[:space:]]*noload[[:space:]]*=>[[:space:]]*chan_mobile\.so[[:space:]]*$' /etc/asterisk/modules.conf; then
-    sed -i '/^\[modules\]$/a noload => chan_mobile.so' /etc/asterisk/modules.conf
-  fi
-}
-
-get_chan_mobile_adapter_address() {
+configured_phone_mac() {
   awk -F= '
-    /^\[adapter\]$/ { in_section=1; next }
-    /^\[/ { in_section=0 }
-    in_section {
-      key=$1
-      value=$2
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
-      if (key == "address") {
-        print value
-        exit
-      }
+    /^\[mobile_phone\]$/ { section=1; next }
+    /^\[/ { section=0 }
+    section && $1 ~ /^[[:space:]]*address[[:space:]]*$/ {
+      value=$2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", value); print value; exit
     }
-  ' /etc/asterisk/chan_mobile.conf
+  ' /etc/asterisk/chan_mobile.conf 2>/dev/null || true
 }
 
-get_chan_mobile_device_address() {
-  awk -F= '
-    /^\[/ {
-      section=$0
-      gsub(/^\[|\]$/, "", section)
-      next
-    }
-    section != "" && section != "general" && section != "adapter" {
-      key=$1
-      value=$2
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
-      if (key == "address") {
-        print value
-        exit
-      }
-    }
-  ' /etc/asterisk/chan_mobile.conf
-}
-
-get_phone_bond_info_path() {
-  local adapter_addr
-  local phone_addr
-
-  adapter_addr=$(get_chan_mobile_adapter_address)
-  phone_addr=$(get_chan_mobile_device_address)
-
-  if [ -z "${adapter_addr:-}" ] || [ -z "${phone_addr:-}" ]; then
-    echo "[!] Unable to determine adapter/device addresses from chan_mobile.conf." >&2
-    return 1
-  fi
-
-  printf '/var/lib/bluetooth/%s/%s/info
-' "$adapter_addr" "$phone_addr"
-}
-
-has_persistent_phone_bond() {
-  local bond_info_path
-
-  bond_info_path=$(get_phone_bond_info_path) || return 1
-  [ -f "$bond_info_path" ]
-}
-
-require_persistent_phone_bond() {
-  local bond_info_path
-
-  bond_info_path=$(get_phone_bond_info_path) || return 1
-
-  if [ -f "$bond_info_path" ]; then
-    return 0
-  fi
-
-  echo "[!] No persistent host Bluetooth bond found for the configured phone."
-  echo "    Pair and trust the phone on the host first, then restart the container."
-  echo "    Expected bond file: $bond_info_path"
-  return 1
-}
-
-is_phone_connected() {
-  local phone_addr
-
-  phone_addr=$(get_chan_mobile_device_address)
-  if [ -z "${phone_addr:-}" ]; then
-    return 1
-  fi
-
-  bluetoothctl info "$phone_addr" 2>/dev/null | grep -q 'Connected: yes'
-}
-
-ensure_phone_trusted() {
-  local phone_addr
-
-  phone_addr=$(get_chan_mobile_device_address)
-  if [ -z "${phone_addr:-}" ]; then
-    return 1
-  fi
-
-  if bluetoothctl info "$phone_addr" 2>/dev/null | grep -q 'Trusted: yes'; then
-    return 0
-  fi
-
-  echo "[*] Marking configured phone as trusted in container Bluetooth state..."
-  printf 'trust %s
-quit
-' "$phone_addr" | bluetoothctl >/dev/null 2>&1 || true
-  bluetoothctl info "$phone_addr" 2>/dev/null | grep -q 'Trusted: yes'
-}
-
-attempt_phone_connection() {
-  local phone_addr
-
-  phone_addr=$(get_chan_mobile_device_address)
-  if [ -z "${phone_addr:-}" ]; then
-    return 1
-  fi
-
-  if is_phone_connected; then
-    return 0
-  fi
-
-  echo "[*] Attempting Bluetooth connection to $phone_addr..."
-  printf 'connect %s
-quit
-' "$phone_addr" | bluetoothctl >/dev/null 2>&1 || true
-  sleep 2
-
-  if is_phone_connected; then
-    echo "[*] Phone Bluetooth link is up."
-    return 0
-  fi
-
-  return 1
-}
-
-wait_for_phone_connection() {
-  local attempts=${1:-10}
-  local delay=${2:-3}
-  local i
-
-  for ((i = 1; i <= attempts; i++)); do
-    if attempt_phone_connection; then
-      return 0
-    fi
-    echo "[*] Waiting for phone connection (${i}/${attempts})..."
-    sleep "$delay"
-  done
-
-  return 1
-}
-
-is_adapter_discovering() {
-  bluetoothctl show 2>/dev/null | grep -q 'Discovering: yes'
-}
-
-reconcile_bluetooth_discovery() {
-  if is_phone_connected && is_adapter_discovering; then
-    echo "[*] Phone is connected; stopping Bluetooth discovery loop."
-    printf 'scan off
-quit
-' | bluetoothctl >/dev/null 2>&1 || true
-  fi
-}
-
-ensure_chan_mobile_running() {
-  local module_status
-
-  module_status=$(/usr/sbin/asterisk -rx "module show like chan_mobile.so" 2>/dev/null || true)
-  if grep -Eq 'chan_mobile\.so[[:space:]].*[[:space:]]Running[[:space:]]+extended' <<<"$module_status"; then
-    return 0
-  fi
-
-  if ! hciconfig -a 2>/dev/null | grep -q '^hci'; then
-    echo "[*] Skipping chan_mobile recovery: no Bluetooth adapter present yet."
-    return 1
-  fi
-
-  if ! has_persistent_phone_bond; then
-    echo "[*] Skipping chan_mobile recovery: no persistent BlueZ bond info for configured phone yet."
-    return 1
-  fi
-
-  ensure_phone_trusted || true
-  attempt_phone_connection || true
-
-  echo "[*] Attempting chan_mobile recovery..."
-  /usr/sbin/asterisk -rx "module unload chan_mobile.so" >/dev/null 2>&1 || true
-  /usr/sbin/asterisk -rx "module load chan_mobile.so" >/dev/null 2>&1 || true
-
-  module_status=$(/usr/sbin/asterisk -rx "module show like chan_mobile.so" 2>/dev/null || true)
-  if grep -Eq 'chan_mobile\.so[[:space:]].*[[:space:]]Running[[:space:]]+extended' <<<"$module_status"; then
-    echo "[*] chan_mobile is running."
-    return 0
-  fi
-
-  echo "[!] chan_mobile recovery attempt did not reach Running state."
-  return 1
-}
-
-monitor_chan_mobile() {
+monitor_gateway() {
   while true; do
     sleep 15
-    ensure_phone_trusted || true
-    attempt_phone_connection || true
-    ensure_chan_mobile_running || true
-    reconcile_bluetooth_discovery || true
+    local phone
+    phone=$(configured_phone_mac)
+    if [ -n "$phone" ]; then
+      bluetoothctl trust "$phone" >/dev/null 2>&1 || true
+      bluetoothctl connect "$phone" >/dev/null 2>&1 || true
+      if ! /usr/sbin/asterisk -rx "module show like chan_mobile.so" 2>/dev/null | grep -q 'Running'; then
+        "$CONTROL" reload-mobile >/dev/null 2>&1 || true
+      fi
+    fi
+    if bluetoothctl show 2>/dev/null | grep -q 'Discovering: yes' && \
+       [ -n "$phone" ] && bluetoothctl info "$phone" 2>/dev/null | grep -q 'Connected: yes'; then
+      bluetoothctl scan off >/dev/null 2>&1 || true
+    fi
   done
 }
 
-echo "[*] Pre-flight checks..."
-mkdir -p /var/run/dbus /var/lib/bluetooth /var/run/asterisk
-chown asterisk:asterisk /var/run/asterisk
-rfkill unblock bluetooth >/dev/null 2>&1 || true
-ensure_chan_mobile_manual_load
+echo "[*] 准备 Asterisk 模块加载策略..."
+if ! grep -Eq '^[[:space:]]*noload[[:space:]]*=>[[:space:]]*chan_mobile\.so' /etc/asterisk/modules.conf; then
+  sed -i '/^\[modules\]$/a noload => chan_mobile.so' /etc/asterisk/modules.conf
+fi
 
-# --- DBUS: private system bus inside the container ---
-echo "[*] Starting private system dbus in container..."
-rm -f /var/run/dbus/pid /var/run/dbus/system_bus_socket || true
+echo "[*] 启动容器内 D-Bus..."
+rm -f /var/run/dbus/pid /var/run/dbus/system_bus_socket
 dbus-daemon --system --fork
-sleep 1
 
-if [ ! -S /var/run/dbus/system_bus_socket ]; then
-  echo "[!] dbus system socket missing after start"
-  ls -l /var/run/dbus || true
-  exit 1
+echo "[*] 自动接管并修复蓝牙环境..."
+if ! "$CONTROL" repair; then
+  echo "[!] 首次蓝牙修复失败，Web 管理页仍将启动，可使用“一键修复蓝牙环境”重试。"
 fi
 
-# --- Bluetooth daemon ---
-echo "[*] Starting bluetoothd (BlueZ) ..."
-rm -f /run/sdp || true
-/usr/sbin/bluetoothd --compat -n -d &
-BT_PID=$!
-sleep 2
-
-if ! ps -p "$BT_PID" >/dev/null 2>&1; then
-  echo "[!] bluetoothd appears down. Diagnostics:"
-  echo "    - rfkill list (if present)"
-  rfkill list || true
-  echo "    - hciconfig -a"
-  hciconfig -a || true
-  echo "    - dmesg | tail -n 100"
-  dmesg | tail -n 100 || true
-  exit 1
+if ! wait_for_hci 5; then
+  echo "[!] 当前没有可用蓝牙适配器，继续启动诊断页面。"
 fi
 
-echo "[*] Waiting for Bluetooth adapter..."
-if ! wait_for_hci 30 2; then
-  echo "[!] No Bluetooth adapter became available in time. Diagnostics:"
-  echo "    - rfkill list (if present)"
-  rfkill list || true
-  echo "    - hciconfig -a"
-  hciconfig -a || true
-  echo "    - dmesg | tail -n 100"
-  dmesg | tail -n 100 || true
-  exit 1
-fi
+PYTHONPATH=/opt/gateway-manager python3 -c \
+  'from gateway_manager import regenerate_saved_config; regenerate_saved_config()' || true
 
-if ! require_persistent_phone_bond; then
-  exit 1
-fi
+echo "[*] 启动 Web 管理服务..."
+python3 /opt/gateway-manager/gateway_manager.py &
+WEB_PID=$!
 
-echo "[*] Applying conservative Bluetooth policy (non-discoverable, non-pairable)..."
-printf 'power on
-pairable off
-discoverable off
-quit
-' | bluetoothctl >/dev/null 2>&1 || true
-ensure_phone_trusted || true
-
-if ! wait_for_phone_connection 10 3; then
-  echo "[*] Phone is not connected yet; continuing startup and keeping automatic retries enabled."
-fi
-
-# --- Asterisk ---
-echo "[*] Launching Asterisk..."
+echo "[*] 启动 Asterisk..."
 /usr/sbin/asterisk -f -vvv &
 ASTERISK_PID=$!
-
-if ! wait_for_asterisk_cli 30 1; then
-  echo "[!] Asterisk CLI did not become ready in time."
-  kill "$ASTERISK_PID" >/dev/null 2>&1 || true
-  wait "$ASTERISK_PID" >/dev/null 2>&1 || true
+if ! wait_for_asterisk; then
+  echo "[!] Asterisk 未能在规定时间内就绪。"
   exit 1
 fi
 
-attempt_phone_connection || true
-ensure_chan_mobile_running || true
-reconcile_bluetooth_discovery || true
-monitor_chan_mobile &
-
+"$CONTROL" reload-mobile || true
+monitor_gateway &
 wait "$ASTERISK_PID"
