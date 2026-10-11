@@ -62,10 +62,10 @@ http://<开发板IP>:8080
 ghcr.io/<仓库所有者>/<仓库名>:latest
 ```
 
-使用 GHCR 镜像时，在 `.env` 设置实际地址：
+使用 GHCR 镜像时，通过当前 Shell 环境变量设置实际地址：
 
 ```bash
-GATEWAY_IMAGE=ghcr.io/<仓库所有者>/<仓库名>:latest
+export GATEWAY_IMAGE=ghcr.io/<仓库所有者>/<仓库名>:latest
 ```
 
 然后执行：
@@ -77,20 +77,34 @@ docker compose up -d
 
 工作流使用仓库自带的 `GITHUB_TOKEN` 和 `packages: write` 权限，不需要额外创建 GHCR 密钥。首次发布后可在 GitHub Packages 中调整镜像可见性。
 
-## 可选配置
+## 可选环境变量
 
-复制示例环境变量：
-
-```bash
-cp config/gateway.env.example .env
-```
+项目不使用环境变量文件，也没有 `env_file`。需要修改默认值时，在执行 Docker Compose 前通过当前 Shell 的 `export` 或命令前缀传入。
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `GATEWAY_IMAGE` | `bluetooth-gsm-sip-gateway:local` | 本地镜像名或 GHCR 完整镜像地址 |
+| `GATEWAY_WEB_HOST` | `0.0.0.0` | Web 管理服务监听地址 |
 | `GATEWAY_WEB_PORT` | `8080` | Web 管理服务端口 |
 | `GATEWAY_ADMIN_TOKEN` | 空 | 设置后保护所有修改接口，浏览器页面中需填写相同令牌 |
 | `GATEWAY_RESTORE_HOST_ON_STOP` | `1` | 容器正常停止时恢复宿主机蓝牙；设为 `0` 保持交接状态 |
+
+例如：
+
+```bash
+export GATEWAY_IMAGE=ghcr.io/<仓库所有者>/<仓库名>:latest
+export GATEWAY_WEB_HOST=0.0.0.0
+export GATEWAY_WEB_PORT=8080
+export GATEWAY_ADMIN_TOKEN='请替换为随机管理令牌'
+export GATEWAY_RESTORE_HOST_ON_STOP=1
+docker compose up -d
+```
+
+也可以只对单次命令生效：
+
+```bash
+GATEWAY_WEB_PORT=8081 GATEWAY_ADMIN_TOKEN='请替换为随机管理令牌' docker compose up -d
+```
 
 ## 蓝牙控制权
 
@@ -106,7 +120,6 @@ cp config/gateway.env.example .env
 
 - Docker Compose 配置：`docker-compose.yml`
 - 容器镜像配置：`Dockerfile`
-- 环境变量示例：`config/gateway.env.example`
 - Web 与管理后端：`app/`
 - 容器入口与蓝牙控制脚本：`scripts/`
 - Asterisk 基础配置：`config/asterisk/`

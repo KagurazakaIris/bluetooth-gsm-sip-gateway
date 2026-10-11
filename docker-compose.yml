@@ -1,6 +1,7 @@
 services:
   asterisk-mobile:
-    image: ${GATEWAY_IMAGE:-bluetooth-gsm-sip-gateway:local}
+    # 可选环境变量 GATEWAY_IMAGE：指定 GHCR 或其他预构建镜像；未设置时使用本地镜像名。
+    image: "${GATEWAY_IMAGE:-bluetooth-gsm-sip-gateway:local}"
     build:
       context: .
       dockerfile: Dockerfile
@@ -24,10 +25,14 @@ services:
       - /var/lib/bluetooth:/var/lib/bluetooth
       - gateway-state:/var/lib/gateway
     environment:
-      GATEWAY_WEB_HOST: ${GATEWAY_WEB_HOST:-0.0.0.0}
-      GATEWAY_WEB_PORT: ${GATEWAY_WEB_PORT:-8080}
-      GATEWAY_ADMIN_TOKEN: ${GATEWAY_ADMIN_TOKEN:-}
-      GATEWAY_RESTORE_HOST_ON_STOP: ${GATEWAY_RESTORE_HOST_ON_STOP:-1}
+      # GATEWAY_WEB_HOST：Web 管理服务监听地址，默认监听所有网络接口。
+      GATEWAY_WEB_HOST: "${GATEWAY_WEB_HOST:-0.0.0.0}"
+      # GATEWAY_WEB_PORT：Web 管理服务监听端口，默认 8080/TCP。
+      GATEWAY_WEB_PORT: "${GATEWAY_WEB_PORT:-8080}"
+      # GATEWAY_ADMIN_TOKEN：可选管理令牌；空值表示不启用令牌校验。
+      GATEWAY_ADMIN_TOKEN: "${GATEWAY_ADMIN_TOKEN:-}"
+      # GATEWAY_RESTORE_HOST_ON_STOP：1 表示容器停止时归还宿主机蓝牙，0 表示保持交接状态。
+      GATEWAY_RESTORE_HOST_ON_STOP: "${GATEWAY_RESTORE_HOST_ON_STOP:-1}"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:$${GATEWAY_WEB_PORT}/api/status"]
       interval: 15s
