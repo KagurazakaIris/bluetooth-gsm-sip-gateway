@@ -5,6 +5,7 @@ STATE_DIR=${GATEWAY_STATE_DIR:-/var/lib/gateway}
 CONTROL=/opt/gateway/scripts/gateway-control.sh
 WEB_PID=""
 ASTERISK_PID=""
+MONITOR_PID=""
 
 mkdir -p "$STATE_DIR" /var/run/dbus /var/run/asterisk /var/lib/bluetooth
 chown asterisk:asterisk /var/run/asterisk
@@ -15,6 +16,9 @@ cleanup() {
   fi
   if [ -n "$ASTERISK_PID" ]; then
     kill "$ASTERISK_PID" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$MONITOR_PID" ]; then
+    kill "$MONITOR_PID" >/dev/null 2>&1 || true
   fi
   if [ "${GATEWAY_RESTORE_HOST_ON_STOP:-1}" = "1" ]; then
     "$CONTROL" return-to-host >/dev/null 2>&1 || true
@@ -110,4 +114,19 @@ fi
 
 "$CONTROL" reload-mobile || true
 monitor_gateway &
-wait "$ASTERISK_PID"
+MONITOR_PID=$!
+
+# 任一关键进程退出都终止容器，交由 Compose 的重启策略恢复完整服务。
+set +e
+wait -n
+EXIT_STATUS=$?
+set -e
+
+if ! kill -0 "$WEB_PID" >/dev/null 2>&1; then
+  echo "[!] Web 管理服务意外退出。"
+elif ! kill -0 "$ASTERISK_PID" >/dev/null 2>&1; then
+  echo "[!] Asterisk 意外退出。"
+else
+  echo "[!] 网关自愈监控意外退出。"
+fi
+exit "$EXIT_STATUS"

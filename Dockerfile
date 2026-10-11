@@ -1,6 +1,9 @@
 FROM ubuntu:18.04
 
-ENV DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PYTHONIOENCODING=UTF-8
 ARG ASTERISK_VERSION=13.18.3
 
 # 工具、BlueZ、D-Bus、Asterisk 及编译和运行依赖
