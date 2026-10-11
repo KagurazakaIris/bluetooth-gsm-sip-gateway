@@ -11,6 +11,10 @@ services:
     cap_add:
       - NET_ADMIN
       - SYS_ADMIN
+    # 使用宿主机网络，不需要 ports 映射；服务直接监听以下宿主机端口：
+    # - Web 管理：8080/TCP（可通过 GATEWAY_WEB_PORT 修改）
+    # - SIP 信令：5060/UDP
+    # - RTP 媒体：10000-10100/UDP
     network_mode: host
     pid: host
     ipc: host
