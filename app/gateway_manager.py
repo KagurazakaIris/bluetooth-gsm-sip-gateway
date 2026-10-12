@@ -409,6 +409,17 @@ def configure_phone(mac):
     return mac
 
 
+def connect_phone(mac):
+    current = device_info(mac)
+    if not current["paired"]:
+        raise RuntimeError("设备未配对；若手机仍显示已配对，请先在两端明确解除配对后重新配对")
+    if not current["connected"]:
+        bluetoothctl("connect", mac, timeout=20)
+        if not device_info(mac)["connected"]:
+            raise RuntimeError("蓝牙连接尚未建立，已保留配对记录，请稍后重试")
+    configure_phone(mac)
+
+
 def async_operation(kind, message, target):
     if not operations.begin(kind, message):
         raise RuntimeError("另一个蓝牙操作正在进行")
@@ -450,15 +461,18 @@ def start_pair(mac):
         bluetoothctl("discoverable", "on", timeout=8, check=False)
         try:
             previous = device_info(mac)
-            if previous["paired"] or previous["trusted"]:
-                bluetoothctl("remove", mac, timeout=15)
+            if previous["paired"]:
+                connect_phone(mac)
+                return "设备已配对并连接，无需重新配对"
+            if previous["trusted"]:
+                # TODO: 缺少配对密钥时无法安全地自动修复手机侧记录，需人工在两端解除配对。
+                raise RuntimeError("开发板仍信任此设备但缺少配对密钥；请在网页解除配对、在手机忘记设备后重新配对")
             bluetoothctl_pair(mac, timeout=50)
             if not device_info(mac)["paired"]:
                 raise RuntimeError(f"设备 {mac} 未完成配对，请在手机蓝牙设置中删除旧记录后重试")
             bluetoothctl("trust", mac, timeout=10)
-            configure_phone(mac)
-            bluetoothctl("connect", mac, timeout=20, check=False)
-            return "配对完成，正在建立 HFP 控制连接"
+            connect_phone(mac)
+            return "配对完成，蓝牙连接已建立"
         finally:
             bluetoothctl("pairable", "off", timeout=8, check=False)
             bluetoothctl("discoverable", "off", timeout=8, check=False)
@@ -592,13 +606,13 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json(HTTPStatus.ACCEPTED, {"ok": True})
             elif path == "/api/bluetooth/connect":
                 mac = normalize_mac(data.get("mac") or load_settings().get("phone_mac"))
-                configure_phone(mac)
-                bluetoothctl("connect", mac, timeout=20)
+                connect_phone(mac)
                 self.send_json(HTTPStatus.OK, {"ok": True})
             elif path == "/api/bluetooth/unpair":
                 mac = normalize_mac(data.get("mac") or load_settings().get("phone_mac"))
                 bluetoothctl("remove", mac, timeout=15)
-                clear_phone_config()
+                if mac == load_settings().get("phone_mac"):
+                    clear_phone_config()
                 self.send_json(HTTPStatus.OK, {"ok": True})
             elif path == "/api/bluetooth/configure":
                 mac = normalize_mac(data.get("mac") or load_settings().get("phone_mac"))

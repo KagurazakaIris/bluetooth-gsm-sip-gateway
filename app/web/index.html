@@ -50,7 +50,7 @@
       <thead><tr><th>设备名</th><th>MAC</th><th>信号</th><th>操作</th></tr></thead>
       <tbody id="devices"><tr><td colspan="4">点击扫描查找手机</td></tr></tbody>
     </table>
-     <p class="notice">点击“配对”后，请在手机端确认配对请求；完成后会自动信任并建立 HFP 连接。重新配对和解除配对是两个独立操作。</p>
+      <p class="notice">已配对设备只会尝试重连，不会自动删除配对记录。首次配对请在手机端确认；若两端密钥不一致，请先在网页解除配对，并在手机上忘记设备后重新配对。</p>
   </fieldset>
 
   <fieldset>
@@ -140,7 +140,7 @@
         if(op.error)showMessage(op.error,true);
         const body=$('devices');body.replaceChildren();
         if(!s.devices.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=4;td.textContent='点击扫描查找手机';tr.append(td);body.append(tr)}
-        for(const d of s.devices){const tr=document.createElement('tr');for(const value of [d.name||'未知设备',d.mac,d.rssi===null?'-':d.rssi+' dBm']){const td=document.createElement('td');td.textContent=value;tr.append(td)}const td=document.createElement('td');td.append(button(d.paired?'重新配对':'配对',()=>action('/api/bluetooth/pair',{mac:d.mac},d.paired?'重新配对已启动':'配对已启动'),op.kind!=='none'));tr.append(td);body.append(tr)}
+        for(const d of s.devices){const tr=document.createElement('tr');for(const value of [d.name||'未知设备',d.mac,d.rssi===null?'-':d.rssi+' dBm']){const td=document.createElement('td');td.textContent=value;tr.append(td)}const td=document.createElement('td');td.append(button(d.paired?'连接':'配对',()=>action(d.paired?'/api/bluetooth/connect':'/api/bluetooth/pair',{mac:d.mac},d.paired?'连接已建立':'配对已启动'),op.kind!=='none'));tr.append(td);body.append(tr)}
          const busy=op.kind!=='none';for(const id of ['scan','repair','connect','unpair'])$(id).disabled=busy;
       }catch(e){showMessage(e.message,true);setBadge('btBadge','状态读取失败',false)}
     }

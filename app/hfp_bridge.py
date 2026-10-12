@@ -100,6 +100,7 @@ class Gateway:
         self.sock = None
         self.parser = NetstringBuffer()
         self.modem_path = None
+        self.modem_signals = []
         self.pending_modems = set()
         self.call_paths = set()
         self.loop = None
@@ -159,10 +160,12 @@ class Gateway:
                     # TODO: 为控制命令加 token，关联异步失败响应并主动清理对应通话。
                     print("[sip] 命令失败:", event.get("data"), flush=True)
                 elif event.get("class") == "call" and event.get("event"):
-                    if event.get("type") == "CALL_INCOMING" and not self.modem_path:
-                        self.sip_hangup()
-                    else:
-                        self.events.sip_event(event)
+                    if event.get("type") == "CALL_INCOMING":
+                        self.refresh_modems()
+                        if not self.modem_path:
+                            self.sip_hangup()
+                            continue
+                    self.events.sip_event(event)
             return True
         except (OSError, RuntimeError, ValueError) as exc:
             self.error = exc
@@ -180,11 +183,15 @@ class Gateway:
             return
         if str(path) == self.modem_path:
             return
+        if self.modem_path:
+            self.on_modem_removed(self.modem_path)
         self.pending_modems.discard(str(path))
         self.modem_path = str(path)
-        self.bus.add_signal_receiver(self.on_call_added, signal_name="CallAdded", dbus_interface=OFONO_CALL_MANAGER, path=path)
-        self.bus.add_signal_receiver(self.on_call_removed, signal_name="CallRemoved", dbus_interface=OFONO_CALL_MANAGER, path=path)
-        self.bus.add_signal_receiver(self.on_call_state, signal_name="PropertyChanged", dbus_interface=OFONO_CALL, path_keyword="path")
+        self.modem_signals = [
+            self.bus.add_signal_receiver(self.on_call_added, signal_name="CallAdded", dbus_interface=OFONO_CALL_MANAGER, path=path),
+            self.bus.add_signal_receiver(self.on_call_removed, signal_name="CallRemoved", dbus_interface=OFONO_CALL_MANAGER, path=path),
+            self.bus.add_signal_receiver(self.on_call_state, signal_name="PropertyChanged", dbus_interface=OFONO_CALL, path_keyword="path"),
+        ]
         manager = dbus.Interface(self.bus.get_object("org.ofono", path), OFONO_CALL_MANAGER)
         for call_path, call_props in manager.GetCalls():
             self.on_call_added(call_path, call_props)
@@ -207,22 +214,31 @@ class Gateway:
     def on_modem_removed(self, path):
         self.pending_modems.discard(str(path))
         if str(path) == self.modem_path:
+            for signal in self.modem_signals:
+                signal.remove()
+            self.modem_signals.clear()
             for call_path in list(self.call_paths):
                 self.events.gsm_removed(call_path)
+            if self.events.calls.direction:
+                self.events.gsm_removed(self.events.calls.gsm_path)
             self.call_paths.clear()
             self.modem_path = None
             self.audio.stop()
 
     def maintain(self):
         self.audio.maintain()
-        if not self.modem_path:
-            self.refresh_modems()
+        self.refresh_modems()
         return True
 
     def refresh_modems(self):
         manager = dbus.Interface(self.bus.get_object("org.ofono", "/"), OFONO_MANAGER)
-        for path, props in manager.GetModems():
-            self.on_modem_added(path, props)
+        mac = settings().get("phone_mac", "")
+        modems = manager.GetModems()
+        ready = [(path, props) for path, props in modems if modem_ready(props, mac)]
+        if self.modem_path and all(str(path) != self.modem_path for path, _ in ready):
+            self.on_modem_removed(self.modem_path)
+        if ready:
+            self.on_modem_added(*ready[0])
 
     def run(self):
         self.connect_sip()
