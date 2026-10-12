@@ -32,6 +32,17 @@ class CallEvents:
                     self.calls.sip_closed()
                 finally:
                     self.ports.sip_hangup()
+        elif kind == "CALL_DTMF_START":
+            digit = event.get("param")
+            # TODO: 若手机 HFP 明确支持 A-D，再扩展按键白名单。
+            if (self.calls.direction != "outbound" or not self.calls.answered
+                    or not isinstance(digit, str) or len(digit) != 1
+                    or digit not in "0123456789*#"):
+                return
+            try:
+                self.ports.gsm_send_tones(digit)
+            except Exception as exc:
+                print("[hfp] 发送 DTMF 失败:", exc, flush=True)
         elif kind == "CALL_CLOSED":
             self._stop_audio()
             self.calls.sip_closed()

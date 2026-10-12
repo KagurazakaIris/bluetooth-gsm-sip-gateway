@@ -103,6 +103,7 @@ class Gateway:
         self.modem_signals = []
         self.pending_modems = set()
         self.call_paths = set()
+        self.sip_call_id = None
         self.loop = None
         self.error = None
         self.events = CallEvents(self, settings().get("sip_user", "1001"))
@@ -142,6 +143,12 @@ class Gateway:
     def gsm_hangup(self, path):
         dbus.Interface(self.bus.get_object("org.ofono", path), OFONO_CALL).Hangup()
 
+    def gsm_send_tones(self, digit):
+        if not self.modem_path:
+            raise RuntimeError("手机 HFP 未连接")
+        manager = dbus.Interface(self.bus.get_object("org.ofono", self.modem_path), OFONO_CALL_MANAGER)
+        manager.SendTones(digit)
+
     def audio_start(self):
         self.audio.start(settings().get("phone_mac", ""))
 
@@ -160,12 +167,20 @@ class Gateway:
                     # TODO: 为控制命令加 token，关联异步失败响应并主动清理对应通话。
                     print("[sip] 命令失败:", event.get("data"), flush=True)
                 elif event.get("class") == "call" and event.get("event"):
-                    if event.get("type") == "CALL_INCOMING":
+                    kind = event.get("type")
+                    if kind == "CALL_INCOMING":
                         self.refresh_modems()
                         if not self.modem_path:
                             self.sip_hangup()
                             continue
+                    elif kind == "CALL_DTMF_START":
+                        if not self.sip_call_id or event.get("id") != self.sip_call_id:
+                            continue
                     self.events.sip_event(event)
+                    if kind == "CALL_INCOMING" and self.events.calls.direction == "outbound" and not self.sip_call_id:
+                        self.sip_call_id = event.get("id")
+                    elif kind == "CALL_CLOSED" and event.get("id") == self.sip_call_id:
+                        self.sip_call_id = None
             return True
         except (OSError, RuntimeError, ValueError) as exc:
             self.error = exc
@@ -222,6 +237,7 @@ class Gateway:
             if self.events.calls.direction:
                 self.events.gsm_removed(self.events.calls.gsm_path)
             self.call_paths.clear()
+            self.sip_call_id = None
             self.modem_path = None
             self.audio.stop()
 
