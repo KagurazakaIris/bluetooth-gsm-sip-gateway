@@ -2,7 +2,14 @@
 
 本项目通过 Docker Compose 在 Linux 主机上运行 BlueZ、oFono、BlueALSA、Baresip、Asterisk 和 Web 管理服务，将手机 GSM 通话桥接到 SIP 软电话。iPhone 和 Android 通过真实的 HFP HF 服务连接，双向通话音频通过 ALSA Loopback 对接 SIP。
 
-日常运行只需操作 Docker Compose。容器会接管宿主机蓝牙适配器；已有配对记录和设置保存在宿主机及 Docker 卷中，升级时无需重新配对。首次使用仍需在手机上确认配对。
+日常运行只需操作 Docker Compose。容器会接管宿主机蓝牙适配器；已有配对记录和设置保存在宿主机及 Docker 卷中，但当前开发板曾在容器重启后丢失 iPhone 配对密钥，不能保证升级后无需重新配对。首次使用仍需在手机上确认配对。
+
+## 开发板当前状态（2026-10-13）
+
+- `bdc6d95` 镜像已部署到 `debian.local`，但现场问题尚未解决，暂不继续调整或重启。
+- 此次重启后，iPhone 的蓝牙配对密钥再次丢失；最后一次检查显示未配对、未连接。不要将容器健康状态视为 iPhone 已可通话，也不要自动删除配对记录。
+- 镜像中的 `/etc/bluetooth/main.conf` 已设置 `Class = 0x000420`（Audio/Video → Car Audio），但适配器实际报告 `0x0020010c`（Computer → Laptop）；`scripts/gateway-control.sh` 启动 BlueZ 时默认加载的 `hostname` 插件依据机箱类型覆盖了设备类别。因此，iPhone 自动显示“汽车音响”的目标尚未实现，且未经新配对验证。
+- 同批部署包含 SIP 去电 DTMF 转发改动，但尚未通过真实通话验证对方语音菜单能否识别按键。
 
 ## 功能
 
