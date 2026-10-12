@@ -66,10 +66,22 @@ configured_phone_mac() {
 }
 
 monitor_gateway() {
+  local bluetooth_repaired=0
   while true; do
     sleep 15
     if [ ! -s "$BT_PID_FILE" ] || ! kill -0 "$(cat "$BT_PID_FILE")" >/dev/null 2>&1; then
-      echo "[!] 容器内 bluetoothd 已退出，终止容器以触发完整重启。"
+      if [ "$bluetooth_repaired" -eq 0 ]; then
+        echo "[!] 容器内 bluetoothd 已退出，尝试原地修复蓝牙环境。"
+        if "$CONTROL" repair; then
+          bluetooth_repaired=1
+          sleep 3
+          if [ -s "$BT_PID_FILE" ] && kill -0 "$(cat "$BT_PID_FILE")" >/dev/null 2>&1; then
+            echo "[*] 蓝牙环境已原地恢复。"
+            continue
+          fi
+        fi
+      fi
+      echo "[!] 蓝牙原地修复失败或再次退出，终止容器以触发完整重启。"
       return 1
     fi
     local phone
