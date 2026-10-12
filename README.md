@@ -2,7 +2,7 @@
 
 本项目通过 Docker Compose 在 Linux 主机上运行 BlueZ、oFono、BlueALSA、Baresip、Asterisk 和 Web 管理服务，将手机 GSM 通话桥接到 SIP 软电话。iPhone 和 Android 通过真实的 HFP HF 服务连接，双向通话音频通过 ALSA Loopback 对接 SIP。
 
-用户只需操作 Docker Compose。容器会自动释放宿主机对蓝牙适配器的占用，不需要预先执行 `systemctl stop bluetooth`、手工配对或填写 MAC 地址。
+日常运行只需操作 Docker Compose。容器会接管宿主机蓝牙适配器；已有配对记录和设置保存在宿主机及 Docker 卷中，升级时无需重新配对。首次使用仍需在手机上确认配对。
 
 ## 功能
 
@@ -26,7 +26,7 @@
 
 ## 启动
 
-本地构建并启动：
+在仓库目录本地构建并启动：
 
 ```bash
 docker compose up -d --build
@@ -44,10 +44,47 @@ http://<开发板IP>:8080
 2. 若状态异常，点击“一键修复蓝牙环境”。
 3. 点击“扫描 10 秒”，找到手机后点击“配对”。
 4. 在手机端确认配对请求。
-5. 页面会自动保存 MAC，并通过 oFono 建立 HFP 连接。
-6. 在“SIP 软电话”中设置分机账号和密码。
+5. 页面会自动保存 MAC，并通过 oFono 建立 HFP 连接；已有配对的手机可直接点击“重新连接”。
+6. 在“SIP 软电话”中设置分机账号和密码，并让 Linphone 注册到宿主机 IP 的 UDP 5060 端口。初始分机为 `1001`，初始密码为 `1234`，请立即修改密码。
+7. 分别验证手机来电转到 Linphone、Linphone 拨号经手机呼出，以及双方通话声音。
 
 不需要使用特殊启动脚本；即使忘记操作方式并直接执行 `docker compose up -d`，入口脚本也会运行相同的自动交接与修复流程。
+
+### 在现有 Compose 部署目录更新
+
+保持原有 `docker-compose.yml` 的服务名、镜像名、`gateway-state` 卷和 `./Recordings` 挂载；同步新版应用文件，并在 Compose 的 `volumes` 中加入只读的 `/lib/modules:/lib/modules:ro`，供容器加载 `snd-aloop`。若镜像名固定为 GHCR 的 `:latest`，而希望在服务器本地构建（例如 Docker 默认桥接网络无法连接软件源），在部署目录执行：
+
+```bash
+docker image tag ghcr.io/kagurazakairis/bluetooth-gsm-sip-gateway:latest \
+  ghcr.io/kagurazakairis/bluetooth-gsm-sip-gateway:rollback
+docker build --network host \
+  -t ghcr.io/kagurazakairis/bluetooth-gsm-sip-gateway:latest .
+docker compose config --quiet
+docker compose up -d --no-build --pull never
+```
+
+备份标签命令仅在旧镜像已存在时执行。`--pull never` 确保 Compose 使用刚在本机构建的镜像，不会用仓库里的同名标签覆盖它。不要使用 `docker compose down -v`：这会删除分机与手机设置；也不要删除宿主机 `/var/lib/bluetooth` 或 `./Recordings`。
+
+### 验证与回退
+
+```bash
+docker compose ps
+curl -fsS http://127.0.0.1:8080/api/status
+docker exec asterisk-mobile asterisk -rx "sip show peers"
+docker compose logs --tail=100 asterisk-mobile
+```
+
+管理页面应显示蓝牙适配器、HFP 通话桥和 Asterisk 正常。用 iPhone 或 Android 建立蓝牙连接、确认 Linphone 分机已注册，再分别进行来去电及双向声音测试；接通后确认 `./Recordings` 中出现 `inbound-*.wav` 和 `outbound-*.wav`。`/api/status` 可检查服务状态，但不能代替真实通话和录音检查。
+
+若新镜像无法工作且已保存旧镜像标签，可在部署目录回退到旧镜像：
+
+```bash
+docker image tag ghcr.io/kagurazakairis/bluetooth-gsm-sip-gateway:rollback \
+  ghcr.io/kagurazakairis/bluetooth-gsm-sip-gateway:latest
+docker compose up -d --force-recreate --no-build --pull never
+```
+
+回退不清除 Docker 卷、蓝牙配对记录或录音。若容器异常退出导致宿主机蓝牙仍被屏蔽，应先检查服务和交接状态，不要同时启动两个 `bluetoothd` 争用同一适配器。
 
 ## GHCR 镜像
 
