@@ -2,6 +2,7 @@
 set -euo pipefail
 
 STATE_DIR=${GATEWAY_STATE_DIR:-/var/lib/gateway}
+BT_PID_FILE="$STATE_DIR/bluetoothd.pid"
 CONTROL=/opt/gateway/scripts/gateway-control.sh
 WEB_PID=""
 ASTERISK_PID=""
@@ -50,6 +51,10 @@ wait_for_asterisk() {
   return 1
 }
 
+bluetoothctl_command() {
+  printf '%s\nquit\n' "$*" | timeout 10 bluetoothctl
+}
+
 configured_phone_mac() {
   awk -F= '
     /^\[mobile_phone\]$/ { section=1; next }
@@ -63,18 +68,22 @@ configured_phone_mac() {
 monitor_gateway() {
   while true; do
     sleep 15
+    if [ ! -s "$BT_PID_FILE" ] || ! kill -0 "$(cat "$BT_PID_FILE")" >/dev/null 2>&1; then
+      echo "[!] 容器内 bluetoothd 已退出，终止容器以触发完整重启。"
+      return 1
+    fi
     local phone
     phone=$(configured_phone_mac)
     if [ -n "$phone" ]; then
-      bluetoothctl trust "$phone" >/dev/null 2>&1 || true
-      bluetoothctl connect "$phone" >/dev/null 2>&1 || true
+      bluetoothctl_command trust "$phone" >/dev/null 2>&1 || true
+      bluetoothctl_command connect "$phone" >/dev/null 2>&1 || true
       if ! /usr/sbin/asterisk -rx "module show like chan_mobile.so" 2>/dev/null | grep -q 'Running'; then
         "$CONTROL" reload-mobile >/dev/null 2>&1 || true
       fi
     fi
-    if bluetoothctl show 2>/dev/null | grep -q 'Discovering: yes' && \
-       [ -n "$phone" ] && bluetoothctl info "$phone" 2>/dev/null | grep -q 'Connected: yes'; then
-      bluetoothctl scan off >/dev/null 2>&1 || true
+    if bluetoothctl_command show 2>/dev/null | grep -q 'Discovering: yes' && \
+       [ -n "$phone" ] && bluetoothctl_command info "$phone" 2>/dev/null | grep -q 'Connected: yes'; then
+      bluetoothctl_command scan off >/dev/null 2>&1 || true
     fi
   done
 }

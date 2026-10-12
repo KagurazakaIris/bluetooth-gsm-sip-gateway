@@ -59,6 +59,7 @@ class OperationState:
 
 operations = OperationState()
 post_lock = threading.Lock()
+bluetoothctl_lock = threading.Lock()
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
@@ -87,7 +88,13 @@ def clean_bluetoothctl_output(output):
 
 def bluetoothctl(*arguments, timeout=8, check=True):
     command = " ".join(str(argument) for argument in arguments)
-    output = run(["bluetoothctl"], timeout=timeout, check=False, input_text=command + "\n")
+    with bluetoothctl_lock:
+        output = run(
+            ["bluetoothctl"],
+            timeout=timeout,
+            check=False,
+            input_text=command + "\nquit\n",
+        )
     output = clean_bluetoothctl_output(output)
     if check and (
         "Failed" in output
@@ -99,50 +106,51 @@ def bluetoothctl(*arguments, timeout=8, check=True):
 
 
 def bluetoothctl_pair(mac, timeout=50):
-    process = subprocess.Popen(
-        ["bluetoothctl", "--agent", "NoInputNoOutput"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-    output = bytearray()
-    deadline = time.monotonic() + timeout
-    try:
-        process.stdin.write(f"pair {mac}\n".encode("utf-8"))
-        process.stdin.flush()
-        while time.monotonic() < deadline:
-            readable, _, _ = select.select(
-                [process.stdout],
-                [],
-                [],
-                min(0.5, max(0, deadline - time.monotonic())),
-            )
-            if readable:
-                chunk = os.read(process.stdout.fileno(), 4096)
-                if not chunk:
+    with bluetoothctl_lock:
+        process = subprocess.Popen(
+            ["bluetoothctl", "--agent", "NoInputNoOutput"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        output = bytearray()
+        deadline = time.monotonic() + timeout
+        try:
+            process.stdin.write(f"pair {mac}\n".encode("utf-8"))
+            process.stdin.flush()
+            while time.monotonic() < deadline:
+                readable, _, _ = select.select(
+                    [process.stdout],
+                    [],
+                    [],
+                    min(0.5, max(0, deadline - time.monotonic())),
+                )
+                if readable:
+                    chunk = os.read(process.stdout.fileno(), 4096)
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+                    text = clean_bluetoothctl_output(output.decode("utf-8", errors="replace"))
+                    if "Pairing successful" in text:
+                        process.stdin.write(b"quit\n")
+                        process.stdin.flush()
+                        return text.strip()
+                    if "Failed to pair" in text or "not available" in text:
+                        raise RuntimeError(text.strip())
+                elif process.poll() is not None:
                     break
-                output.extend(chunk)
-                text = clean_bluetoothctl_output(output.decode("utf-8", errors="replace"))
-                if "Pairing successful" in text:
-                    process.stdin.write(b"quit\n")
-                    process.stdin.flush()
-                    return text.strip()
-                if "Failed to pair" in text or "not available" in text:
-                    raise RuntimeError(text.strip())
-            elif process.poll() is not None:
-                break
-        text = clean_bluetoothctl_output(output.decode("utf-8", errors="replace")).strip()
-        if process.poll() is not None:
-            raise RuntimeError(text or "bluetoothctl 配对进程意外退出")
-        raise RuntimeError(text or f"等待设备 {mac} 确认配对超时")
-    finally:
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
+            text = clean_bluetoothctl_output(output.decode("utf-8", errors="replace")).strip()
+            if process.poll() is not None:
+                raise RuntimeError(text or "bluetoothctl 配对进程意外退出")
+            raise RuntimeError(text or f"等待设备 {mac} 确认配对超时")
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
 
 
 def normalize_mac(value):
@@ -243,7 +251,10 @@ def discovered_devices():
     output = bluetoothctl("devices", timeout=8, check=False)
     addresses = []
     for line in output.splitlines():
-        match = re.search(r"\b([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})\b", line)
+        match = re.search(
+            r"(?:^|\]\s)Device\s+([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})(?:\s|$)",
+            line.strip(),
+        )
         if match:
             mac = match.group(1).upper()
             if mac not in addresses:

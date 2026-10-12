@@ -6,6 +6,10 @@ BT_PID_FILE="$STATE_DIR/bluetoothd.pid"
 AGENT_PID_FILE="$STATE_DIR/bt-agent.pid"
 HOST_CONTROL=/opt/gateway/scripts/host-bluetooth-control.sh
 
+bluetoothctl_command() {
+  printf '%s\nquit\n' "$*" | timeout 10 bluetoothctl
+}
+
 stop_pid_file() {
   local file=$1
   local expected_name=$2
@@ -54,9 +58,9 @@ start_internal_bluetooth() {
 
   bt-agent -c NoInputNoOutput >"$STATE_DIR/bt-agent.log" 2>&1 &
   echo $! >"$AGENT_PID_FILE"
-  bluetoothctl power on >/dev/null 2>&1 || true
-  bluetoothctl pairable off >/dev/null 2>&1 || true
-  bluetoothctl discoverable off >/dev/null 2>&1 || true
+  bluetoothctl_command power on >/dev/null 2>&1 || true
+  bluetoothctl_command pairable off >/dev/null 2>&1 || true
+  bluetoothctl_command discoverable off >/dev/null 2>&1 || true
 }
 
 reload_chan_mobile() {
