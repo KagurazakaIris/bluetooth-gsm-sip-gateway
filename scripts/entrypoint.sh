@@ -71,7 +71,7 @@ monitor_gateway() {
     local phone
     phone=$(python3 -c 'import json,sys; from pathlib import Path; p=Path(sys.argv[1]); print(json.loads(p.read_text()).get("phone_mac", "") if p.exists() else "")' "$STATE_DIR/settings.json" 2>/dev/null || true)
     if [ -n "$phone" ]; then
-      printf 'trust %s\nconnect %s\nquit\n' "$phone" "$phone" | timeout 15 bluetoothctl >/dev/null 2>&1 || true
+      /opt/gateway/scripts/reconnect-phone.sh "$phone" || true
     fi
   done
 }

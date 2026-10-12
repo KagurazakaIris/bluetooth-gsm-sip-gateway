@@ -120,7 +120,7 @@ def bluetoothctl_pair(mac, timeout=50):
         discovery_deadline = min(deadline, time.monotonic() + 15)
         pair_started = False
         try:
-            process.stdin.write(b"scan on\n")
+            process.stdin.write(b"default-agent\nscan on\n")
             process.stdin.flush()
             while time.monotonic() < deadline:
                 readable, _, _ = select.select(
@@ -140,6 +140,13 @@ def bluetoothctl_pair(mac, timeout=50):
                         process.stdin.flush()
                         pair_started = True
                     if "Pairing successful" in text:
+                        confirmation_deadline = min(deadline, time.monotonic() + 8)
+                        while time.monotonic() < confirmation_deadline:
+                            if paired_in_bluez(mac):
+                                break
+                            time.sleep(0.4)
+                        else:
+                            raise RuntimeError(f"设备 {mac} 未完成配对，请在手机蓝牙设置中删除旧记录后重试")
                         process.stdin.write(b"quit\n")
                         process.stdin.flush()
                         return text.strip()
@@ -165,6 +172,21 @@ def bluetoothctl_pair(mac, timeout=50):
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait()
+
+
+def paired_in_bluez(mac):
+    # 查询实际绑定状态，不以 bluetoothctl 输出的“Pairing successful”代替密钥落盘确认。
+    result = subprocess.run(
+        ["bluetoothctl", "paired-devices"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=8,
+        check=False,
+    )
+    if result.returncode:
+        raise RuntimeError("无法确认 BlueZ 的设备配对状态")
+    return any(line.startswith(f"Device {mac} ") for line in clean_bluetoothctl_output(result.stdout).splitlines())
 
 
 def bluetoothctl_scan(duration=10):
@@ -427,9 +449,12 @@ def start_pair(mac):
         bluetoothctl("pairable", "on", timeout=8)
         bluetoothctl("discoverable", "on", timeout=8, check=False)
         try:
-            if device_info(mac)["paired"]:
+            previous = device_info(mac)
+            if previous["paired"] or previous["trusted"]:
                 bluetoothctl("remove", mac, timeout=15)
             bluetoothctl_pair(mac, timeout=50)
+            if not device_info(mac)["paired"]:
+                raise RuntimeError(f"设备 {mac} 未完成配对，请在手机蓝牙设置中删除旧记录后重试")
             bluetoothctl("trust", mac, timeout=10)
             configure_phone(mac)
             bluetoothctl("connect", mac, timeout=20, check=False)

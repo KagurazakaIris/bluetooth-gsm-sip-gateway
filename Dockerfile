@@ -36,6 +36,6 @@ COPY app /opt/gateway/app
 COPY scripts /opt/gateway/scripts
 RUN chmod +x /opt/gateway/app/gateway_manager.py /opt/gateway/app/hfp_bridge.py \
         /opt/gateway/scripts/entrypoint.sh /opt/gateway/scripts/gateway-control.sh \
-        /opt/gateway/scripts/host-bluetooth-control.sh
+        /opt/gateway/scripts/host-bluetooth-control.sh /opt/gateway/scripts/reconnect-phone.sh
 
 ENTRYPOINT ["/opt/gateway/scripts/entrypoint.sh"]
