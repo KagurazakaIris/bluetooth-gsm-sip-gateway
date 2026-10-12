@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import select
 import subprocess
 import tempfile
 import threading
@@ -20,6 +21,7 @@ CONTROL = "/opt/gateway/scripts/gateway-control.sh"
 HOST_CONTROL = "/opt/gateway/scripts/host-bluetooth-control.sh"
 MAC_RE = re.compile(r"^[0-9A-F]{2}(?::[0-9A-F]{2}){5}$")
 SIP_USER_RE = re.compile(r"^[A-Za-z0-9_.-]{1,31}$")
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class OperationState:
@@ -63,9 +65,10 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
-def run(command, timeout=30, check=True):
+def run(command, timeout=30, check=True, input_text=None):
     result = subprocess.run(
         command,
+        input=input_text,
         universal_newlines=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -76,6 +79,70 @@ def run(command, timeout=30, check=True):
     if check and result.returncode != 0:
         raise RuntimeError(output or "命令执行失败: " + " ".join(command))
     return output
+
+
+def clean_bluetoothctl_output(output):
+    return ANSI_RE.sub("", output).replace("\r", "")
+
+
+def bluetoothctl(*arguments, timeout=8, check=True):
+    command = " ".join(str(argument) for argument in arguments)
+    output = run(["bluetoothctl"], timeout=timeout, check=False, input_text=command + "\n")
+    output = clean_bluetoothctl_output(output)
+    if check and (
+        "Failed" in output
+        or "not available" in output
+        or "No default controller" in output
+    ):
+        raise RuntimeError(output)
+    return output
+
+
+def bluetoothctl_pair(mac, timeout=50):
+    process = subprocess.Popen(
+        ["bluetoothctl", "--agent", "NoInputNoOutput"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    output = bytearray()
+    deadline = time.monotonic() + timeout
+    try:
+        process.stdin.write(f"pair {mac}\n".encode("utf-8"))
+        process.stdin.flush()
+        while time.monotonic() < deadline:
+            readable, _, _ = select.select(
+                [process.stdout],
+                [],
+                [],
+                min(0.5, max(0, deadline - time.monotonic())),
+            )
+            if readable:
+                chunk = os.read(process.stdout.fileno(), 4096)
+                if not chunk:
+                    break
+                output.extend(chunk)
+                text = clean_bluetoothctl_output(output.decode("utf-8", errors="replace"))
+                if "Pairing successful" in text:
+                    process.stdin.write(b"quit\n")
+                    process.stdin.flush()
+                    return text.strip()
+                if "Failed to pair" in text or "not available" in text:
+                    raise RuntimeError(text.strip())
+            elif process.poll() is not None:
+                break
+        text = clean_bluetoothctl_output(output.decode("utf-8", errors="replace")).strip()
+        if process.poll() is not None:
+            raise RuntimeError(text or "bluetoothctl 配对进程意外退出")
+        raise RuntimeError(text or f"等待设备 {mac} 确认配对超时")
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
 
 
 def normalize_mac(value):
@@ -108,7 +175,7 @@ def save_settings(data):
 
 
 def bluetooth_show():
-    output = run(["bluetoothctl", "show"], timeout=8, check=False)
+    output = bluetoothctl("show", timeout=8, check=False)
     address = ""
     powered = False
     discovering = False
@@ -134,7 +201,7 @@ def bluetooth_show():
 
 
 def device_info(mac):
-    output = run(["bluetoothctl", "info", mac], timeout=8, check=False)
+    output = bluetoothctl("info", mac, timeout=8, check=False)
     result = {
         "mac": mac,
         "name": "未知设备",
@@ -173,7 +240,7 @@ def device_info(mac):
 
 
 def discovered_devices():
-    output = run(["bluetoothctl", "devices"], timeout=8, check=False)
+    output = bluetoothctl("devices", timeout=8, check=False)
     addresses = []
     for line in output.splitlines():
         match = re.search(r"\b([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})\b", line)
@@ -187,7 +254,7 @@ def discovered_devices():
 def wait_for_device(mac, timeout=15):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        output = run(["bluetoothctl", "info", mac], timeout=8, check=False)
+        output = bluetoothctl("info", mac, timeout=8, check=False)
         if f"Device {mac}" in output:
             return
         time.sleep(0.5)
@@ -374,16 +441,16 @@ def async_operation(kind, message, target):
 
 def start_scan():
     def action():
-        run(["bluetoothctl", "power", "on"], timeout=8)
-        run(["bluetoothctl", "pairable", "on"], timeout=8)
-        run(["bluetoothctl", "scan", "on"], timeout=8)
+        bluetoothctl("power", "on", timeout=8)
+        bluetoothctl("pairable", "on", timeout=8)
+        bluetoothctl("scan", "on", timeout=8)
         time.sleep(10)
-        run(["bluetoothctl", "scan", "off"], timeout=8, check=False)
+        bluetoothctl("scan", "off", timeout=8, check=False)
         devices = discovered_devices()
         with operations.lock:
             operations.devices = devices
-        run(["bluetoothctl", "pairable", "off"], timeout=8, check=False)
-        run(["bluetoothctl", "discoverable", "off"], timeout=8, check=False)
+        bluetoothctl("pairable", "off", timeout=8, check=False)
+        bluetoothctl("discoverable", "off", timeout=8, check=False)
         return f"扫描完成，发现 {len(devices)} 个设备"
 
     async_operation("scan", "正在扫描蓝牙设备", action)
@@ -393,35 +460,26 @@ def start_pair(mac):
     mac = normalize_mac(mac)
 
     def action():
-        run(["bluetoothctl", "power", "on"], timeout=8)
-        run(["bluetoothctl", "pairable", "on"], timeout=8)
-        run(["bluetoothctl", "discoverable", "on"], timeout=8, check=False)
+        bluetoothctl("power", "on", timeout=8)
+        bluetoothctl("pairable", "on", timeout=8)
+        bluetoothctl("discoverable", "on", timeout=8, check=False)
         scanning = False
         try:
             if device_info(mac)["paired"]:
-                output = run(["bluetoothctl", "remove", mac], timeout=15)
-                if "Failed" in output:
-                    raise RuntimeError(output)
-                output = run(["bluetoothctl", "scan", "on"], timeout=8)
-                if "Failed" in output:
-                    raise RuntimeError(output)
+                bluetoothctl("remove", mac, timeout=15)
+                bluetoothctl("scan", "on", timeout=8)
                 scanning = True
                 wait_for_device(mac)
-            output = run(
-                ["bluetoothctl", "--agent", "NoInputNoOutput", "pair", mac],
-                timeout=50,
-            )
-            if "Failed" in output:
-                raise RuntimeError(output)
-            run(["bluetoothctl", "trust", mac], timeout=10)
-            run(["bluetoothctl", "connect", mac], timeout=20, check=False)
+            bluetoothctl_pair(mac, timeout=50)
+            bluetoothctl("trust", mac, timeout=10)
+            bluetoothctl("connect", mac, timeout=20, check=False)
             channel, detected = configure_phone(mac)
             return f"配对完成，HFP 通道 {channel}" + ("（自动检测）" if detected else "（默认值，请按需修改）")
         finally:
             if scanning:
-                run(["bluetoothctl", "scan", "off"], timeout=8, check=False)
-            run(["bluetoothctl", "pairable", "off"], timeout=8, check=False)
-            run(["bluetoothctl", "discoverable", "off"], timeout=8, check=False)
+                bluetoothctl("scan", "off", timeout=8, check=False)
+            bluetoothctl("pairable", "off", timeout=8, check=False)
+            bluetoothctl("discoverable", "off", timeout=8, check=False)
 
     async_operation("pair", "等待手机确认配对", action)
 
@@ -545,11 +603,11 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json(HTTPStatus.ACCEPTED, {"ok": True})
             elif path == "/api/bluetooth/connect":
                 mac = normalize_mac(data.get("mac") or load_settings().get("phone_mac"))
-                run(["bluetoothctl", "connect", mac], timeout=20)
+                bluetoothctl("connect", mac, timeout=20)
                 self.send_json(HTTPStatus.OK, {"ok": True})
             elif path == "/api/bluetooth/unpair":
                 mac = normalize_mac(data.get("mac") or load_settings().get("phone_mac"))
-                run(["bluetoothctl", "remove", mac], timeout=15)
+                bluetoothctl("remove", mac, timeout=15)
                 clear_mobile_config()
                 self.send_json(HTTPStatus.OK, {"ok": True})
             elif path == "/api/bluetooth/configure":
