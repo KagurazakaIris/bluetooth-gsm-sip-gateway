@@ -3,6 +3,8 @@ import re
 
 NUMBER_RE = re.compile(r"\+?[0-9*#]{1,80}\Z")
 SIP_NUMBER_RE = re.compile(r"sip:(\+?[0-9*#]{1,80})@[A-Za-z0-9.:-]+(?:;[A-Za-z0-9=;_-]+)?\Z")
+CALLER_NUMBER_RE = re.compile(r"\+?[0-9*#]{1,80}\Z")
+CALLER_SEPARATORS = str.maketrans("", "", " -().")
 
 
 def sip_caller_number(peer_uri):
@@ -10,6 +12,20 @@ def sip_caller_number(peer_uri):
     if not match:
         raise ValueError("SIP 主叫号码格式无效")
     return match.group(1)
+
+
+def incoming_caller_number(caller):
+    raw = str(caller or "")
+    if any(ord(char) < 32 or ord(char) == 127 for char in raw):
+        return None
+    number = raw.translate(CALLER_SEPARATORS)
+    return number if CALLER_NUMBER_RE.fullmatch(number) else None
+
+
+def incoming_sip_uri(user, caller):
+    uri = f"sip:{user}@127.0.0.1:5060"
+    number = incoming_caller_number(caller)
+    return f"{uri};caller={number}" if number else uri
 
 
 class HfpCallRouter:
@@ -27,7 +43,7 @@ class HfpCallRouter:
         self.direction = "inbound"
         self.gsm_path = path
         try:
-            self.ports.sip_dial(self.sip_user)
+            self.ports.sip_dial(self.sip_user, incoming_caller_number(caller))
         except Exception:
             self._clear()
             raise

@@ -13,6 +13,8 @@ class GatewayConfigTests(unittest.TestCase):
         self.assertIn("Set(CALLERID(num)=${EXTEN})", extensions)
         self.assertIn("Dial(SIP/hfp@hfp,60,U(record-call^outbound))", extensions)
         self.assertIn("Dial(SIP/1001,30,U(record-call^inbound))", extensions)
+        self.assertIn("SIP_HEADER(To)", extensions)
+        self.assertIn("Set(CALLERID(num)=${HFP_NUM})", extensions)
         self.assertIn("MixMonitor(/var/spool/asterisk/monitor/", extensions)
         self.assertNotIn("Mobile/", extensions)
 

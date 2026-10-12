@@ -1,5 +1,6 @@
 import unittest
 
+from app import hfp_calls
 from app.hfp_calls import HfpCallRouter, sip_caller_number
 
 
@@ -7,8 +8,8 @@ class FakePorts:
     def __init__(self):
         self.actions = []
 
-    def sip_dial(self, number):
-        self.actions.append(("sip_dial", number))
+    def sip_dial(self, number, caller=None):
+        self.actions.append(("sip_dial", number, caller))
 
     def sip_accept(self):
         self.actions.append(("sip_accept",))
@@ -34,7 +35,7 @@ class CallRouterTests(unittest.TestCase):
 
     def test_gsm_incoming_waits_for_sip_answer(self):
         self.router.gsm_incoming("/call/1", "12345")
-        self.assertEqual(self.ports.actions, [("sip_dial", "1001")])
+        self.assertEqual(self.ports.actions, [("sip_dial", "1001", "12345")])
         self.router.sip_established()
         self.assertEqual(self.ports.actions[-1], ("gsm_answer", "/call/1"))
 
@@ -50,7 +51,7 @@ class CallRouterTests(unittest.TestCase):
             self.router.sip_incoming("1001@evil")
         with self.assertRaises(RuntimeError):
             self.router.sip_incoming("13800138000")
-        self.assertEqual(self.ports.actions, [("sip_dial", "1001")])
+        self.assertEqual(self.ports.actions, [("sip_dial", "1001", "12345")])
 
     def test_sip_hangup_releases_gsm_and_clears_state(self):
         self.router.gsm_incoming("/call/1", "12345")
@@ -65,7 +66,23 @@ class CallRouterTests(unittest.TestCase):
         self.router.gsm_removed("/call/2")
         self.assertEqual(self.ports.actions[-1], ("sip_hangup",))
         self.router.gsm_incoming("/call/3", "12345")
-        self.assertEqual(self.ports.actions[-1], ("sip_dial", "1001"))
+        self.assertEqual(self.ports.actions[-1], ("sip_dial", "1001", "12345"))
+
+    def test_long_international_number_is_preserved(self):
+        self.router.gsm_incoming("/call/1", "+12 (345) 678-9012.3456")
+        self.assertEqual(self.ports.actions, [("sip_dial", "1001", "+1234567890123456")])
+
+    def test_hidden_or_unsafe_caller_falls_back_to_gateway_identity(self):
+        for caller in ("", "anonymous", "123\r\nHeader: injected", "+" + "1" * 81):
+            self.assertIsNone(getattr(hfp_calls, "incoming_caller_number", lambda _: "<missing>")(caller))
+        self.router.gsm_incoming("/call/1", "anonymous")
+        self.assertEqual(self.ports.actions, [("sip_dial", "1001", None)])
+
+    def test_incoming_uri_carries_safe_caller_without_changing_destination(self):
+        build = getattr(hfp_calls, "incoming_sip_uri", lambda *_: "<missing>")
+        self.assertEqual(build("1001", "+1234567890123456"),
+                         "sip:1001@127.0.0.1:5060;caller=+1234567890123456")
+        self.assertEqual(build("1001", "anonymous"), "sip:1001@127.0.0.1:5060")
 
     def test_sip_caller_number_rejects_non_numeric_or_malformed_uri(self):
         self.assertEqual(sip_caller_number("sip:+12345@127.0.0.1"), "+12345")

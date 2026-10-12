@@ -13,6 +13,7 @@ import dbus.mainloop.glib
 from gi.repository import GLib
 
 from app.baresip_control import NetstringBuffer, command_packet
+from app.hfp_calls import incoming_sip_uri
 from app.hfp_events import CallEvents, modem_ready
 
 
@@ -119,9 +120,8 @@ class Gateway:
         # Baresip 的 ctrl_tcp 仅允许一个客户端，保持连接贯穿服务生命周期。
         self.sock.sendall(command_packet(command, params))
 
-    def sip_dial(self, user):
-        # TODO: 将手机来电的 LineIdentification 安全映射到 SIP 主叫号码。
-        self.send("dial", f"sip:{user}@127.0.0.1:5060")
+    def sip_dial(self, user, caller):
+        self.send("dial", incoming_sip_uri(user, caller))
 
     def sip_accept(self):
         self.send("accept")

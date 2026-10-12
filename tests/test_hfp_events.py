@@ -7,8 +7,8 @@ class FakePorts:
     def __init__(self):
         self.actions = []
 
-    def sip_dial(self, user):
-        self.actions.append(("dial", user))
+    def sip_dial(self, user, caller):
+        self.actions.append(("dial", user, caller))
 
     def sip_accept(self):
         self.actions.append(("accept",))
@@ -48,7 +48,7 @@ class EventsTests(unittest.TestCase):
     def test_gsm_inbound_and_sip_answer(self):
         self.events.gsm_added("/call/1", {"State": "incoming", "LineIdentification": "+123"})
         self.events.sip_event({"type": "CALL_ESTABLISHED"})
-        self.assertEqual(self.ports.actions, [("dial", "1001"), ("gsm_answer", "/call/1")])
+        self.assertEqual(self.ports.actions, [("dial", "1001", "+123"), ("gsm_answer", "/call/1")])
         self.events.gsm_state("/call/1", "active")
         self.assertEqual(self.ports.actions[-1], ("audio_start",))
 
@@ -59,7 +59,7 @@ class EventsTests(unittest.TestCase):
     def test_incoming_waiting_call_is_rejected_without_disrupting_active_call(self):
         self.events.gsm_added("/call/1", {"State": "incoming"})
         self.events.gsm_added("/call/3", {"State": "incoming"})
-        self.assertEqual(self.ports.actions, [("dial", "1001"), ("gsm_hangup", "/call/3")])
+        self.assertEqual(self.ports.actions, [("dial", "1001", None), ("gsm_hangup", "/call/3")])
 
     def test_modem_is_not_ready_until_ofono_populates_its_properties(self):
         mac = "02:00:00:00:00:01"
@@ -77,7 +77,7 @@ class EventsTests(unittest.TestCase):
         self.assertIsNone(self.events.calls.direction)
 
     def test_failed_sip_dial_rejects_mobile_call(self):
-        def fail(user):
+        def fail(user, caller):
             raise OSError("Baresip 控制连接异常")
 
         self.ports.sip_dial = fail
