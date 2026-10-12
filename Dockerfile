@@ -26,6 +26,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         util-linux \
     && rm -rf /var/lib/apt/lists/*
 
+# 仅调整蓝牙适配器的主/次设备类别；保留镜像自带的其他 BlueZ 配置。
+RUN sed -i 's/^#Class = 0x000100$/Class = 0x000420/' /etc/bluetooth/main.conf && \
+    grep -qx 'Class = 0x000420' /etc/bluetooth/main.conf
+
 COPY config/asterisk /opt/gateway/config/asterisk
 RUN cp /opt/gateway/config/asterisk/logger.conf /etc/asterisk/logger.conf && \
     cp /opt/gateway/config/asterisk/rtp.conf /etc/asterisk/rtp.conf && \
