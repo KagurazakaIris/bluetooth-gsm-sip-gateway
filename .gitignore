@@ -9,3 +9,6 @@ __pycache__/
 
 # 本地参考归档
 /asterisk.tgz
+
+# 通话录音包含个人语音，不纳入版本控制
+/Recordings/

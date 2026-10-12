@@ -431,12 +431,15 @@ def write_sip_config(user, secret):
         "MOBILE_IFACE=mobile_phone\n\n"
         "[from-sip]\n"
         "exten => _X.,1,NoOp(Outbound via ${MOBILE_IFACE}: ${EXTEN})\n"
-        " same => n,Dial(Mobile/${MOBILE_IFACE}/${EXTEN},60)\n"
+        " same => n,Dial(Mobile/${MOBILE_IFACE}/${EXTEN},60,U(record-call^outbound))\n"
         " same => n,Hangup()\n\n"
         "[from-mobile]\n"
         "exten => s,1,NoOp(Incoming GSM from ${CALLERID(all)} on ${CHANNEL})\n"
-        f" same => n,Dial(SIP/{user},30)\n"
-        " same => n,Hangup()\n"
+        f" same => n,Dial(SIP/{user},30,U(record-call^inbound))\n"
+        " same => n,Hangup()\n\n"
+        "[record-call]\n"
+        "exten => s,1,MixMonitor(/var/spool/asterisk/monitor/${ARG1}-${STRFTIME(${EPOCH},,%Y%m%d-%H%M%S)}-${UNIQUEID}.wav,b)\n"
+        " same => n,Return()\n"
     )
     for path, content in (
         (Path("/etc/asterisk/sip.conf"), sip_content),

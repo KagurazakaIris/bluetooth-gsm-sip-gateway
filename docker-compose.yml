@@ -24,6 +24,7 @@ services:
       - /dev:/dev
       - /var/lib/bluetooth:/var/lib/bluetooth
       - gateway-state:/var/lib/gateway
+      - ./Recordings:/var/spool/asterisk/monitor
     environment:
       # GATEWAY_WEB_HOST：Web 管理服务监听地址，默认监听所有网络接口。
       GATEWAY_WEB_HOST: "${GATEWAY_WEB_HOST:-0.0.0.0}"
