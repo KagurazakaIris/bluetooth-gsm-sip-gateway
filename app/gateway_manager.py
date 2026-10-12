@@ -115,8 +115,10 @@ def bluetoothctl_pair(mac, timeout=50):
         )
         output = bytearray()
         deadline = time.monotonic() + timeout
+        discovery_deadline = min(deadline, time.monotonic() + 15)
+        pair_started = False
         try:
-            process.stdin.write(f"pair {mac}\n".encode("utf-8"))
+            process.stdin.write(b"scan on\n")
             process.stdin.flush()
             while time.monotonic() < deadline:
                 readable, _, _ = select.select(
@@ -131,18 +133,28 @@ def bluetoothctl_pair(mac, timeout=50):
                         break
                     output.extend(chunk)
                     text = clean_bluetoothctl_output(output.decode("utf-8", errors="replace"))
+                    if not pair_started and mac in text:
+                        process.stdin.write(f"scan off\npair {mac}\n".encode("utf-8"))
+                        process.stdin.flush()
+                        pair_started = True
                     if "Pairing successful" in text:
                         process.stdin.write(b"quit\n")
                         process.stdin.flush()
                         return text.strip()
                     if "Failed to pair" in text or "not available" in text:
                         raise RuntimeError(text.strip())
+                    if not pair_started and "Failed to start discovery" in text:
+                        raise RuntimeError(text.strip())
                 elif process.poll() is not None:
                     break
+                if not pair_started and time.monotonic() >= discovery_deadline:
+                    raise RuntimeError(f"扫描 15 秒后仍未发现设备 {mac}，请保持手机蓝牙设置页面开启")
             text = clean_bluetoothctl_output(output.decode("utf-8", errors="replace")).strip()
             if process.poll() is not None:
                 raise RuntimeError(text or "bluetoothctl 配对进程意外退出")
-            raise RuntimeError(text or f"等待设备 {mac} 确认配对超时")
+            if pair_started:
+                raise RuntimeError(text or f"等待设备 {mac} 确认配对超时")
+            raise RuntimeError(f"扫描 15 秒后仍未发现设备 {mac}，请保持手机蓝牙设置页面开启")
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -306,16 +318,6 @@ def discovered_devices(scan_output=""):
             if mac not in addresses:
                 addresses.append(mac)
     return [device_info(mac) for mac in addresses]
-
-
-def wait_for_device(mac, timeout=15):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        output = bluetoothctl("info", mac, timeout=8, check=False)
-        if f"Device {mac}" in output:
-            return
-        time.sleep(0.5)
-    raise RuntimeError(f"解除旧绑定后未重新发现设备 {mac}，请确认手机蓝牙仍可被发现")
 
 
 def detect_hfp_channel(mac):
@@ -522,8 +524,6 @@ def start_pair(mac):
         try:
             if device_info(mac)["paired"]:
                 bluetoothctl("remove", mac, timeout=15)
-                bluetoothctl_scan(duration=10)
-                wait_for_device(mac)
             bluetoothctl_pair(mac, timeout=50)
             bluetoothctl("trust", mac, timeout=10)
             bluetoothctl("connect", mac, timeout=20, check=False)
