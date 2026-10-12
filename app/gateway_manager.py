@@ -153,6 +153,52 @@ def bluetoothctl_pair(mac, timeout=50):
                     process.wait()
 
 
+def bluetoothctl_scan(duration=10):
+    with bluetoothctl_lock:
+        process = subprocess.Popen(
+            ["bluetoothctl"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        output = bytearray()
+        deadline = time.monotonic() + duration
+        try:
+            process.stdin.write(b"scan on\n")
+            process.stdin.flush()
+            while time.monotonic() < deadline:
+                readable, _, _ = select.select(
+                    [process.stdout],
+                    [],
+                    [],
+                    min(0.5, max(0, deadline - time.monotonic())),
+                )
+                if readable:
+                    chunk = os.read(process.stdout.fileno(), 4096)
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+                elif process.poll() is not None:
+                    break
+            text = clean_bluetoothctl_output(output.decode("utf-8", errors="replace"))
+            if process.poll() is not None:
+                raise RuntimeError(text.strip() or "bluetoothctl 扫描进程意外退出")
+            if "Failed to start discovery" in text:
+                raise RuntimeError(text.strip())
+            process.stdin.write(b"scan off\nquit\n")
+            process.stdin.flush()
+            process.wait(timeout=3)
+            return text
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+
+
 def normalize_mac(value):
     mac = str(value or "").strip().upper()
     if not MAC_RE.fullmatch(mac):
@@ -247,8 +293,8 @@ def device_info(mac):
     return result
 
 
-def discovered_devices():
-    output = bluetoothctl("devices", timeout=8, check=False)
+def discovered_devices(scan_output=""):
+    output = scan_output + "\n" + bluetoothctl("devices", timeout=8, check=False)
     addresses = []
     for line in output.splitlines():
         match = re.search(
@@ -454,15 +500,14 @@ def start_scan():
     def action():
         bluetoothctl("power", "on", timeout=8)
         bluetoothctl("pairable", "on", timeout=8)
-        bluetoothctl("scan", "on", timeout=8)
-        time.sleep(10)
-        bluetoothctl("scan", "off", timeout=8, check=False)
-        devices = discovered_devices()
-        with operations.lock:
-            operations.devices = devices
-        bluetoothctl("pairable", "off", timeout=8, check=False)
-        bluetoothctl("discoverable", "off", timeout=8, check=False)
-        return f"扫描完成，发现 {len(devices)} 个设备"
+        try:
+            devices = discovered_devices(bluetoothctl_scan(duration=10))
+            with operations.lock:
+                operations.devices = devices
+            return f"扫描完成，发现 {len(devices)} 个设备"
+        finally:
+            bluetoothctl("pairable", "off", timeout=8, check=False)
+            bluetoothctl("discoverable", "off", timeout=8, check=False)
 
     async_operation("scan", "正在扫描蓝牙设备", action)
 
@@ -474,12 +519,10 @@ def start_pair(mac):
         bluetoothctl("power", "on", timeout=8)
         bluetoothctl("pairable", "on", timeout=8)
         bluetoothctl("discoverable", "on", timeout=8, check=False)
-        scanning = False
         try:
             if device_info(mac)["paired"]:
                 bluetoothctl("remove", mac, timeout=15)
-                bluetoothctl("scan", "on", timeout=8)
-                scanning = True
+                bluetoothctl_scan(duration=10)
                 wait_for_device(mac)
             bluetoothctl_pair(mac, timeout=50)
             bluetoothctl("trust", mac, timeout=10)
@@ -487,8 +530,6 @@ def start_pair(mac):
             channel, detected = configure_phone(mac)
             return f"配对完成，HFP 通道 {channel}" + ("（自动检测）" if detected else "（默认值，请按需修改）")
         finally:
-            if scanning:
-                bluetoothctl("scan", "off", timeout=8, check=False)
             bluetoothctl("pairable", "off", timeout=8, check=False)
             bluetoothctl("discoverable", "off", timeout=8, check=False)
 
