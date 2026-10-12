@@ -37,7 +37,7 @@
     </div>
     <button id="repair" type="button">一键修复蓝牙环境</button>
     <button id="returnHost" class="danger" type="button">归还蓝牙给宿主机</button>
-    <p class="hint">直接运行 docker compose 即可。修复会停止宿主机蓝牙服务、重置 HCI，并重启容器内 BlueZ 与 chan_mobile。</p>
+     <p class="hint">修复会停止宿主机蓝牙服务、重置 HCI，并重启容器内 BlueZ、oFono 与 BlueALSA。</p>
   </fieldset>
 
   <fieldset>
@@ -50,28 +50,26 @@
       <thead><tr><th>设备名</th><th>MAC</th><th>信号</th><th>操作</th></tr></thead>
       <tbody id="devices"><tr><td colspan="4">点击扫描查找手机</td></tr></tbody>
     </table>
-    <p class="notice">点击“配对”后，请在手机端确认配对请求；完成后会自动信任、连接、探测 HFP 通道并写入 Asterisk 配置。</p>
+     <p class="notice">点击“配对”后，请在手机端确认配对请求；完成后会自动信任并建立 HFP 连接。重新配对和解除配对是两个独立操作。</p>
   </fieldset>
 
   <fieldset>
-    <legend>chan_mobile 配置</legend>
+     <legend>HFP 手机选择</legend>
     <form id="mobileConfig">
       <label>手机 MAC <input id="phoneMac" name="mac" placeholder="扫描配对后自动填写" maxlength="17" required></label>
-      <label>HFP RFCOMM 通道 <input id="hfpChannel" name="channel" type="number" min="1" max="30" value="3" required></label>
-      <button type="submit">保存并重载</button>
-      <button id="reload" type="button">重新加载 chan_mobile</button>
+       <button type="submit">保存手机地址</button>
     </form>
-    <p id="channelHint" class="hint">配对后自动探测；探测失败时使用通道 3，可在此修正。</p>
+     <p class="hint">连接由 oFono 的 HFP 配置处理，不再手动填写 RFCOMM 通道。</p>
   </fieldset>
 
   <fieldset>
     <legend>运行状态</legend>
     <div class="kv">
-      <span>chan_mobile</span><span id="moduleState">-</span>
+       <span>HFP 通话桥</span><span id="moduleState">-</span>
       <span>手机链路</span><span id="linkState">-</span>
       <span>当前操作</span><span id="operationState">-</span>
     </div>
-    <pre id="asteriskOutput" class="hint message"></pre>
+     <pre id="asteriskOutput" class="hint message"></pre>
   </fieldset>
 
   <fieldset>
@@ -115,11 +113,10 @@
 
     $('scan').onclick=()=>action('/api/bluetooth/scan',{},'扫描已启动');
     $('repair').onclick=()=>action('/api/system/repair',{},'修复已启动');
-    $('reload').onclick=()=>action('/api/system/reload',{},'chan_mobile 已重载');
     $('returnHost').onclick=()=>{if(confirm('归还后网关蓝牙将停止，确认继续？'))action('/api/system/return',{},'蓝牙已归还宿主机')};
     $('connect').onclick=()=>action('/api/bluetooth/connect',{mac:$('phoneMac').value},'连接命令已执行');
     $('unpair').onclick=()=>{if(confirm('确认解除当前手机的配对？'))action('/api/bluetooth/unpair',{mac:$('phoneMac').value},'已解除配对')};
-    $('mobileConfig').onsubmit=e=>{e.preventDefault();action('/api/bluetooth/configure',{mac:$('phoneMac').value,channel:Number($('hfpChannel').value)},'配置已保存并重载')};
+     $('mobileConfig').onsubmit=e=>{e.preventDefault();action('/api/bluetooth/configure',{mac:$('phoneMac').value},'手机地址已保存')};
     $('sipConfig').onsubmit=e=>{e.preventDefault();action('/api/sip/configure',{user:$('sipUser').value,secret:$('sipSecret').value},'SIP 配置已保存并重载').then(()=>$('sipSecret').value='')};
 
     async function refresh(){
@@ -135,17 +132,16 @@
         const p=s.phone;
         $('phoneState').textContent=p?(p.name+' · '+p.mac+' · '+(p.paired?'已配对':'未配对')+' · '+(p.trusted?'已信任':'未信任')+' · '+(p.connected?'已连接':'未连接')):'尚未选择手机';
         $('linkState').textContent=p&&p.connected?'Connected':'Disconnected';$('linkState').className=p&&p.connected?'ok':'bad';
-        $('phoneMac').value=s.settings.phone_mac||$('phoneMac').value;$('hfpChannel').value=s.settings.hfp_channel||3;
-        $('channelHint').textContent=s.settings.hfp_channel_detected?'当前通道由 SDP 自动检测':'当前使用默认或手动指定的通道';
+         $('phoneMac').value=s.settings.phone_mac||$('phoneMac').value;
         $('sipUser').value=s.settings.sip_user||'1001';$('sipHint').textContent=s.settings.sip_has_secret?'已保存 SIP 密码，留空可保持不变':'尚未通过网页保存 SIP 密码；当前使用镜像内初始配置';
-        $('moduleState').textContent=s.asterisk.chan_mobile?'Running':'Stopped';$('moduleState').className=s.asterisk.chan_mobile?'ok':'bad';
-        $('asteriskOutput').textContent=s.asterisk.mobile_output||'';
+         $('moduleState').textContent=s.hfp.ready?'Running':'Stopped';$('moduleState').className=s.hfp.ready?'ok':'bad';
+         $('asteriskOutput').textContent=s.asterisk.sip_output||'';
         const op=s.operation;$('operationState').textContent=op.kind==='none'?(op.error||op.message||'空闲'):(op.message||op.kind);
         if(op.error)showMessage(op.error,true);
         const body=$('devices');body.replaceChildren();
         if(!s.devices.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=4;td.textContent='点击扫描查找手机';tr.append(td);body.append(tr)}
         for(const d of s.devices){const tr=document.createElement('tr');for(const value of [d.name||'未知设备',d.mac,d.rssi===null?'-':d.rssi+' dBm']){const td=document.createElement('td');td.textContent=value;tr.append(td)}const td=document.createElement('td');td.append(button(d.paired?'重新配对':'配对',()=>action('/api/bluetooth/pair',{mac:d.mac},d.paired?'重新配对已启动':'配对已启动'),op.kind!=='none'));tr.append(td);body.append(tr)}
-        const busy=op.kind!=='none';for(const id of ['scan','repair','connect','unpair','reload'])$(id).disabled=busy;
+         const busy=op.kind!=='none';for(const id of ['scan','repair','connect','unpair'])$(id).disabled=busy;
       }catch(e){showMessage(e.message,true);setBadge('btBadge','状态读取失败',false)}
     }
     refresh();setInterval(()=>{if(!document.hidden)refresh()},2000);

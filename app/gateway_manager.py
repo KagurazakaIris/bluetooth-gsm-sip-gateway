@@ -13,6 +13,8 @@ from pathlib import Path
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse
 
+from app.gateway_config import asterisk_extensions, asterisk_sip, baresip_accounts, baresip_config
+
 
 STATE_DIR = Path(os.environ.get("GATEWAY_STATE_DIR", "/var/lib/gateway"))
 SETTINGS_FILE = STATE_DIR / "settings.json"
@@ -320,73 +322,18 @@ def discovered_devices(scan_output=""):
     return [device_info(mac) for mac in addresses]
 
 
-def detect_hfp_channel(mac):
-    output = run(["sdptool", "browse", mac], timeout=25, check=False)
-    in_hfp_gateway = False
-    for line in output.splitlines():
-        text = line.strip()
-        if text.startswith("Service Name:"):
-            name = text.split(":", 1)[1].strip().lower()
-            in_hfp_gateway = "handsfree" in name and "gateway" in name
-            continue
-        if in_hfp_gateway:
-            match = re.match(r"Channel:\s*(\d+)$", text)
-            if match:
-                channel = int(match.group(1))
-                if 1 <= channel <= 30:
-                    return channel, True
-    return 3, False
-
-
-def write_mobile_config(adapter_mac, phone_mac, channel):
-    adapter_mac = normalize_mac(adapter_mac)
-    phone_mac = normalize_mac(phone_mac)
-    if not isinstance(channel, int) or not 1 <= channel <= 30:
-        raise ValueError("HFP RFCOMM 通道必须在 1 到 30 之间")
-    content = (
-        "[general]\n"
-        "interval=30\n\n"
-        "[adapter]\n"
-        "id=usb\n"
-        f"address={adapter_mac}\n\n"
-        "[mobile_phone]\n"
-        f"address={phone_mac}\n"
-        f"port={channel}\n"
-        "context=from-mobile\n"
-        "adapter=usb\n"
-    )
-    for path in (Path("/etc/asterisk/chan_mobile.conf"), Path("/etc/asterisk/mobile.conf")):
-        temporary = path.with_suffix(path.suffix + ".tmp")
-        temporary.write_text(content, encoding="utf-8")
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-
-
-def clear_mobile_config():
-    content = Path("/opt/gateway/config/asterisk/chan_mobile.unconfigured.conf").read_text(encoding="utf-8")
-    for path in (Path("/etc/asterisk/chan_mobile.conf"), Path("/etc/asterisk/mobile.conf")):
-        temporary = path.with_suffix(path.suffix + ".tmp")
-        temporary.write_text(content, encoding="utf-8")
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
+def clear_phone_config():
     settings = load_settings()
     for key in ("phone_mac", "hfp_channel", "hfp_channel_detected"):
         settings.pop(key, None)
     save_settings(settings)
-    run(["/usr/sbin/asterisk", "-rx", "module unload chan_mobile.so"], timeout=15, check=False)
 
 
 def regenerate_saved_config():
     settings = load_settings()
-    adapter_mac = settings.get("adapter_mac", "")
-    phone_mac = settings.get("phone_mac", "")
-    channel = settings.get("hfp_channel", 3)
-    if MAC_RE.fullmatch(adapter_mac) and MAC_RE.fullmatch(phone_mac):
-        write_mobile_config(adapter_mac, phone_mac, int(channel))
-    sip_user = settings.get("sip_user", "")
-    sip_secret = settings.get("sip_secret", "")
-    if SIP_USER_RE.fullmatch(sip_user) and sip_secret:
-        write_sip_config(sip_user, sip_secret)
+    sip_user = settings.get("sip_user", "1001")
+    sip_secret = settings.get("sip_secret", "1234")
+    write_sip_config(sip_user, sip_secret)
     return True
 
 
@@ -397,54 +344,15 @@ def write_sip_config(user, secret):
         raise ValueError("SIP 分机只能包含字母、数字、点、下划线和连字符")
     if not secret or len(secret) > 128 or "\n" in secret or "\r" in secret:
         raise ValueError("SIP 密码无效")
-    sip_content = (
-        "[general]\n"
-        "udpbindaddr=0.0.0.0:5060\n"
-        "transport=udp\n"
-        "allowguest=no\n"
-        "srvlookup=yes\n"
-        "language=en\n"
-        "context=from-sip\n\n"
-        "disallow=all\n"
-        "allow=alaw\n"
-        "allow=ulaw\n\n"
-        f"[{user}]\n"
-        "type=friend\n"
-        "host=dynamic\n"
-        f"secret={secret}\n"
-        "context=from-sip\n"
-        f"callerid=\"Softphone\" <{user}>\n"
-        "disallow=all\n"
-        "allow=alaw\n"
-        "allow=ulaw\n"
-        "nat=force_rport,comedia\n"
-        "qualify=yes\n"
-        "directmedia=no\n"
-        "dtmfmode=rfc2833\n"
-    )
-    extensions_content = (
-        "[general]\n"
-        "static=yes\n"
-        "writeprotect=no\n"
-        "clearglobalvars=no\n\n"
-        "[globals]\n"
-        "MOBILE_IFACE=mobile_phone\n\n"
-        "[from-sip]\n"
-        "exten => _X.,1,NoOp(Outbound via ${MOBILE_IFACE}: ${EXTEN})\n"
-        " same => n,Dial(Mobile/${MOBILE_IFACE}/${EXTEN},60,U(record-call^outbound))\n"
-        " same => n,Hangup()\n\n"
-        "[from-mobile]\n"
-        "exten => s,1,NoOp(Incoming GSM from ${CALLERID(all)} on ${CHANNEL})\n"
-        f" same => n,Dial(SIP/{user},30,U(record-call^inbound))\n"
-        " same => n,Hangup()\n\n"
-        "[record-call]\n"
-        "exten => s,1,MixMonitor(/var/spool/asterisk/monitor/${ARG1}-${STRFTIME(${EPOCH},,%Y%m%d-%H%M%S)}-${UNIQUEID}.wav,b)\n"
-        " same => n,Return()\n"
-    )
+    sip_content = asterisk_sip(user, secret)
+    extensions_content = asterisk_extensions(user)
     for path, content in (
         (Path("/etc/asterisk/sip.conf"), sip_content),
         (Path("/etc/asterisk/extensions.conf"), extensions_content),
+        (STATE_DIR / "baresip" / "config", baresip_config()),
+        (STATE_DIR / "baresip" / "accounts", baresip_accounts()),
     ):
+        path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(path.suffix + ".tmp")
         temporary.write_text(content, encoding="utf-8")
         os.chmod(temporary, 0o600)
@@ -463,26 +371,20 @@ def configure_sip(user, submitted_secret):
         run(["/usr/sbin/asterisk", "-rx", "dialplan reload"], timeout=15)
 
 
-def configure_phone(mac, manual_channel=None):
+def configure_phone(mac):
+    mac = normalize_mac(mac)
     adapter = bluetooth_show()
     if not adapter["address"]:
         raise RuntimeError("没有检测到可用蓝牙适配器")
-    if manual_channel is None:
-        channel, detected = detect_hfp_channel(mac)
-    else:
-        channel = int(manual_channel)
-        detected = False
-    write_mobile_config(adapter["address"], mac, channel)
     settings = load_settings()
     settings.update({
         "adapter_mac": adapter["address"],
         "phone_mac": mac,
-        "hfp_channel": channel,
-        "hfp_channel_detected": detected,
     })
+    for key in ("hfp_channel", "hfp_channel_detected"):
+        settings.pop(key, None)
     save_settings(settings)
-    run([CONTROL, "reload-mobile"], timeout=30)
-    return channel, detected
+    return mac
 
 
 def async_operation(kind, message, target):
@@ -529,9 +431,9 @@ def start_pair(mac):
                 bluetoothctl("remove", mac, timeout=15)
             bluetoothctl_pair(mac, timeout=50)
             bluetoothctl("trust", mac, timeout=10)
+            configure_phone(mac)
             bluetoothctl("connect", mac, timeout=20, check=False)
-            channel, detected = configure_phone(mac)
-            return f"配对完成，HFP 通道 {channel}" + ("（自动检测）" if detected else "（默认值，请按需修改）")
+            return "配对完成，正在建立 HFP 控制连接"
         finally:
             bluetoothctl("pairable", "off", timeout=8, check=False)
             bluetoothctl("discoverable", "off", timeout=8, check=False)
@@ -540,13 +442,21 @@ def start_pair(mac):
 
 
 def asterisk_status():
-    module = run(["/usr/sbin/asterisk", "-rx", "module show like chan_mobile.so"], timeout=8, check=False)
-    devices = run(["/usr/sbin/asterisk", "-rx", "mobile show devices"], timeout=8, check=False)
+    peers = run(["/usr/sbin/asterisk", "-rx", "sip show peers"], timeout=8, check=False)
     return {
-        "ready": "Unable to connect" not in module and bool(module),
-        "chan_mobile": "Running" in module,
-        "mobile_output": devices[-800:] if devices else "",
+        "ready": "Unable to connect" not in peers and "Name/username" in peers,
+        "sip_output": peers[-800:] if peers else "",
     }
+
+
+def bridge_status():
+    path = STATE_DIR / "hfp_bridge.pid"
+    try:
+        pid = int(path.read_text(encoding="ascii").strip())
+        alive = Path(f"/proc/{pid}/comm").read_text(encoding="ascii").strip() == "python3"
+    except (OSError, ValueError):
+        alive = False
+    return {"ready": alive}
 
 
 def full_status():
@@ -566,13 +476,12 @@ def full_status():
         "phone": phone,
         "settings": {
             "phone_mac": phone_mac,
-            "hfp_channel": settings.get("hfp_channel", 3),
-            "hfp_channel_detected": settings.get("hfp_channel_detected", False),
             "sip_user": settings.get("sip_user", "1001"),
             "sip_has_secret": bool(settings.get("sip_secret")),
         },
         "devices": devices,
         "asterisk": asterisk_status(),
+        "hfp": bridge_status(),
         "operation": operation,
     }
 
@@ -658,17 +567,17 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json(HTTPStatus.ACCEPTED, {"ok": True})
             elif path == "/api/bluetooth/connect":
                 mac = normalize_mac(data.get("mac") or load_settings().get("phone_mac"))
+                configure_phone(mac)
                 bluetoothctl("connect", mac, timeout=20)
                 self.send_json(HTTPStatus.OK, {"ok": True})
             elif path == "/api/bluetooth/unpair":
                 mac = normalize_mac(data.get("mac") or load_settings().get("phone_mac"))
                 bluetoothctl("remove", mac, timeout=15)
-                clear_mobile_config()
+                clear_phone_config()
                 self.send_json(HTTPStatus.OK, {"ok": True})
             elif path == "/api/bluetooth/configure":
                 mac = normalize_mac(data.get("mac") or load_settings().get("phone_mac"))
-                channel = int(data.get("channel", 3))
-                configure_phone(mac, channel)
+                configure_phone(mac)
                 self.send_json(HTTPStatus.OK, {"ok": True})
             elif path == "/api/system/repair":
                 async_operation("repair", "正在修复蓝牙环境", lambda: run([CONTROL, "repair"], timeout=60))
@@ -676,9 +585,6 @@ class Handler(SimpleHTTPRequestHandler):
             elif path == "/api/sip/configure":
                 configure_sip(data.get("user"), data.get("secret"))
                 self.send_json(HTTPStatus.OK, {"ok": True})
-            elif path == "/api/system/reload":
-                output = run([CONTROL, "reload-mobile"], timeout=30)
-                self.send_json(HTTPStatus.OK, {"ok": True, "message": output})
             elif path == "/api/system/return":
                 output = run([CONTROL, "return-to-host"], timeout=45)
                 self.send_json(HTTPStatus.OK, {"ok": True, "message": output})

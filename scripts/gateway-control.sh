@@ -3,7 +3,8 @@ set -euo pipefail
 
 STATE_DIR=${GATEWAY_STATE_DIR:-/var/lib/gateway}
 BT_PID_FILE="$STATE_DIR/bluetoothd.pid"
-AGENT_PID_FILE="$STATE_DIR/bt-agent.pid"
+OFONO_PID_FILE="$STATE_DIR/ofonod.pid"
+BLUEALSA_PID_FILE="$STATE_DIR/bluealsa.pid"
 HOST_CONTROL=/opt/gateway/scripts/host-bluetooth-control.sh
 
 bluetoothctl_command() {
@@ -32,15 +33,9 @@ stop_pid_file() {
   fi
 }
 
-asterisk_ready() {
-  /usr/sbin/asterisk -rx "core waitfullybooted" >/dev/null 2>&1
-}
-
 stop_internal_bluetooth() {
-  if asterisk_ready; then
-    /usr/sbin/asterisk -rx "module unload chan_mobile.so" >/dev/null 2>&1 || true
-  fi
-  stop_pid_file "$AGENT_PID_FILE" bt-agent
+  stop_pid_file "$BLUEALSA_PID_FILE" bluealsa
+  stop_pid_file "$OFONO_PID_FILE" ofonod
   stop_pid_file "$BT_PID_FILE" bluetoothd
   rm -f /run/sdp
 }
@@ -56,24 +51,21 @@ start_internal_bluetooth() {
     return 1
   fi
 
-  bt-agent -c NoInputNoOutput >"$STATE_DIR/bt-agent.log" 2>&1 &
-  echo $! >"$AGENT_PID_FILE"
+  ofonod -n >"$STATE_DIR/ofono.log" 2>&1 &
+  echo $! >"$OFONO_PID_FILE"
+  sleep 2
+  bluealsa -p hfp-ofono >"$STATE_DIR/bluealsa.log" 2>&1 &
+  echo $! >"$BLUEALSA_PID_FILE"
+  sleep 2
+  for file in "$OFONO_PID_FILE" "$BLUEALSA_PID_FILE"; do
+    if ! kill -0 "$(cat "$file")" >/dev/null 2>&1; then
+      echo "HFP 进程启动失败: $file" >&2
+      return 1
+    fi
+  done
   bluetoothctl_command power on >/dev/null 2>&1 || true
   bluetoothctl_command pairable off >/dev/null 2>&1 || true
   bluetoothctl_command discoverable off >/dev/null 2>&1 || true
-}
-
-reload_chan_mobile() {
-  if [ ! -f /etc/asterisk/chan_mobile.conf ] || ! grep -q '^\[mobile_phone\]$' /etc/asterisk/chan_mobile.conf; then
-    echo "尚未生成手机配置，跳过 chan_mobile 加载"
-    return 0
-  fi
-  if ! asterisk_ready; then
-    echo "Asterisk 尚未就绪，配置将在启动后加载"
-    return 0
-  fi
-  /usr/sbin/asterisk -rx "module unload chan_mobile.so" >/dev/null 2>&1 || true
-  /usr/sbin/asterisk -rx "module load chan_mobile.so"
 }
 
 repair_environment() {
@@ -90,7 +82,6 @@ repair_environment() {
     hciconfig "$adapter" up >/dev/null 2>&1 || true
   done
   start_internal_bluetooth
-  reload_chan_mobile
 }
 
 return_to_host() {
@@ -102,7 +93,6 @@ case "${1:-}" in
   start-bluetooth) start_internal_bluetooth ;;
   stop-bluetooth) stop_internal_bluetooth ;;
   repair) repair_environment ;;
-  reload-mobile) reload_chan_mobile ;;
   return-to-host) return_to_host ;;
-  *) echo "用法: $0 {start-bluetooth|stop-bluetooth|repair|reload-mobile|return-to-host}" >&2; exit 2 ;;
+  *) echo "用法: $0 {start-bluetooth|stop-bluetooth|repair|return-to-host}" >&2; exit 2 ;;
 esac

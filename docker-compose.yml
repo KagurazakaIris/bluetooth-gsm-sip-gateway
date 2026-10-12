@@ -17,11 +17,14 @@ services:
     # - Web 管理：8080/TCP（可通过 GATEWAY_WEB_PORT 修改）
     # - SIP 信令：5060/UDP
     # - RTP 媒体：10000-10100/UDP
+    # - 本地 Baresip：5070/UDP、4444/TCP（仅监听 127.0.0.1）
     network_mode: host
     pid: host
     ipc: host
     volumes:
       - /dev:/dev
+      # 容器启动时按需加载宿主机的 snd-aloop 内核模块。
+      - /lib/modules:/lib/modules:ro
       - /var/lib/bluetooth:/var/lib/bluetooth
       - gateway-state:/var/lib/gateway
       - ./Recordings:/var/spool/asterisk/monitor

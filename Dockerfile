@@ -1,91 +1,41 @@
-FROM ubuntu:18.04
+FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     PYTHONIOENCODING=UTF-8
-ARG ASTERISK_VERSION=13.18.3
 
-# 工具、BlueZ、D-Bus、Asterisk 及编译和运行依赖
-RUN apt-get update && \
-    apt-get install -y \
-        autoconf \
-        automake \
-        bison \
-        build-essential \
+# Asterisk 18 保留 chan_sip 分机；oFono 负责 HFP 控制，BlueALSA 负责 SCO。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        alsa-utils \
+        asterisk \
+        baresip \
+        bluez \
+        bluez-alsa-utils \
         ca-certificates \
         curl \
-        flex \
-        git \
+        dbus \
         iproute2 \
         kmod \
-        libbluetooth-dev \
-        libcurl4-openssl-dev \
-        libdb-dev \
-        libdbus-1-dev \
-        libedit-dev \
-        libjansson-dev \
-        libncurses5-dev \
-        libogg-dev \
-        libspeex-dev \
-        libspeexdsp-dev \
-        libsrtp2-dev \
-        libsqlite3-dev \
-        libssl-dev \
-        libtool \
-        libusb-1.0-0-dev \
-        libvorbis-dev \
-        libxml2-dev \
-        nano \
-        pkg-config \
+        ofono \
         procps \
         python3 \
+        python3-dbus \
+        python3-gi \
         rfkill \
         util-linux \
-        uuid-dev \
-        vim \
-        wget \
-        bluez bluez-tools \
-        dbus \
-        asterisk \
     && rm -rf /var/lib/apt/lists/*
 
-# 从官方源码重建 Asterisk，并显式启用 chan_mobile。
-# 先清理发行版模块，避免残留 ABI 不匹配的动态库。
-RUN rm -rf /usr/lib/asterisk/modules/* && \
-    curl -L "https://downloads.asterisk.org/pub/telephony/asterisk/old-releases/asterisk-${ASTERISK_VERSION}.tar.gz" -o /tmp/asterisk.tar.gz && \
-    mkdir -p /tmp/asterisk-src && \
-    tar -xf /tmp/asterisk.tar.gz -C /tmp/asterisk-src --strip-components=1 && \
-    cd /tmp/asterisk-src && \
-    ./configure --with-bluetooth && \
-    make menuselect.makeopts && \
-    menuselect/menuselect --enable chan_mobile menuselect.makeopts && \
-    make -j"$(nproc)" && \
-    make install && \
-    test -f /usr/lib/asterisk/modules/chan_mobile.so && \
-    rm -rf /tmp/asterisk-src /tmp/asterisk.tar.gz
-
-# 创建 D-Bus、蓝牙和 Asterisk 运行目录
-RUN mkdir -p /var/run/dbus /var/lib/bluetooth /var/run/asterisk && \
-    chown asterisk:asterisk /var/run/asterisk
-
-# 基础配置，蓝牙地址由管理服务在运行时生成
 COPY config/asterisk /opt/gateway/config/asterisk
-RUN cp /opt/gateway/config/asterisk/chan_mobile.unconfigured.conf /etc/asterisk/mobile.conf && \
-    cp /opt/gateway/config/asterisk/chan_mobile.unconfigured.conf /etc/asterisk/chan_mobile.conf && \
-    cp /opt/gateway/config/asterisk/extensions.conf /etc/asterisk/extensions.conf && \
-    cp /opt/gateway/config/asterisk/logger.conf /etc/asterisk/logger.conf && \
+RUN cp /opt/gateway/config/asterisk/logger.conf /etc/asterisk/logger.conf && \
     cp /opt/gateway/config/asterisk/rtp.conf /etc/asterisk/rtp.conf && \
-    cp /opt/gateway/config/asterisk/sip.conf /etc/asterisk/sip.conf
+    mkdir -p /var/run/dbus /var/lib/bluetooth /var/run/asterisk /var/lib/gateway /var/spool/asterisk/monitor /var/lib/gateway/baresip && \
+    chown asterisk:asterisk /var/run/asterisk /var/spool/asterisk/monitor
 
-# 蓝牙管理服务和宿主机控制权交接脚本
 COPY app /opt/gateway/app
 COPY scripts /opt/gateway/scripts
-RUN chmod +x \
-        /opt/gateway/app/gateway_manager.py \
-        /opt/gateway/scripts/entrypoint.sh \
-        /opt/gateway/scripts/gateway-control.sh \
-        /opt/gateway/scripts/host-bluetooth-control.sh && \
-    mkdir -p /var/lib/gateway
+RUN chmod +x /opt/gateway/app/gateway_manager.py /opt/gateway/app/hfp_bridge.py \
+        /opt/gateway/scripts/entrypoint.sh /opt/gateway/scripts/gateway-control.sh \
+        /opt/gateway/scripts/host-bluetooth-control.sh
 
 ENTRYPOINT ["/opt/gateway/scripts/entrypoint.sh"]

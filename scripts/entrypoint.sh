@@ -2,44 +2,40 @@
 set -euo pipefail
 
 STATE_DIR=${GATEWAY_STATE_DIR:-/var/lib/gateway}
-BT_PID_FILE="$STATE_DIR/bluetoothd.pid"
+export PYTHONPATH=/opt/gateway
 CONTROL=/opt/gateway/scripts/gateway-control.sh
 WEB_PID=""
 ASTERISK_PID=""
+BARESIP_PID=""
+BRIDGE_PID=""
 MONITOR_PID=""
+LOOPBACK_OWNED=0
 
-mkdir -p "$STATE_DIR" /var/run/dbus /var/run/asterisk /var/lib/bluetooth
-chown asterisk:asterisk /var/run/asterisk
+mkdir -p "$STATE_DIR" /var/run/dbus /var/run/asterisk /var/lib/bluetooth /var/spool/asterisk/monitor
+chown asterisk:asterisk /var/run/asterisk /var/spool/asterisk/monitor
 
 cleanup() {
-  if [ -n "$WEB_PID" ]; then
-    kill "$WEB_PID" >/dev/null 2>&1 || true
-  fi
-  if [ -n "$ASTERISK_PID" ]; then
-    kill "$ASTERISK_PID" >/dev/null 2>&1 || true
-  fi
-  if [ -n "$MONITOR_PID" ]; then
-    kill "$MONITOR_PID" >/dev/null 2>&1 || true
-  fi
+  trap - EXIT TERM INT
+  for pid in "$MONITOR_PID" "$BRIDGE_PID" "$BARESIP_PID" "$ASTERISK_PID" "$WEB_PID"; do
+    if [ -n "$pid" ]; then
+      kill "$pid" >/dev/null 2>&1 || true
+    fi
+  done
+  for pid in "$BRIDGE_PID" "$BARESIP_PID" "$ASTERISK_PID"; do
+    if [ -n "$pid" ]; then
+      wait "$pid" >/dev/null 2>&1 || true
+    fi
+  done
   if [ "${GATEWAY_RESTORE_HOST_ON_STOP:-1}" = "1" ]; then
     "$CONTROL" return-to-host >/dev/null 2>&1 || true
   else
     "$CONTROL" stop-bluetooth >/dev/null 2>&1 || true
   fi
+  if [ "$LOOPBACK_OWNED" -eq 1 ]; then
+    modprobe -r snd-aloop >/dev/null 2>&1 || echo '[!] ALSA Loopback 仍被使用，保留内核模块。'
+  fi
 }
 trap cleanup EXIT TERM INT
-
-wait_for_hci() {
-  local attempts=${1:-30}
-  for ((i = 1; i <= attempts; i++)); do
-    if hciconfig -a 2>/dev/null | grep -q '^hci'; then
-      return 0
-    fi
-    echo "[*] 等待蓝牙适配器 (${i}/${attempts})..."
-    sleep 2
-  done
-  return 1
-}
 
 wait_for_asterisk() {
   for ((i = 1; i <= 30; i++)); do
@@ -51,103 +47,73 @@ wait_for_asterisk() {
   return 1
 }
 
-bluetoothctl_command() {
-  printf '%s\nquit\n' "$*" | timeout 10 bluetoothctl
-}
-
-configured_phone_mac() {
-  awk -F= '
-    /^\[mobile_phone\]$/ { section=1; next }
-    /^\[/ { section=0 }
-    section && $1 ~ /^[[:space:]]*address[[:space:]]*$/ {
-      value=$2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", value); print value; exit
-    }
-  ' /etc/asterisk/chan_mobile.conf 2>/dev/null || true
+alive_file() {
+  local file=$1
+  [ -s "$file" ] && kill -0 "$(cat "$file")" >/dev/null 2>&1
 }
 
 monitor_gateway() {
   local bluetooth_repaired=0
-  while true; do
-    sleep 15
-    if [ ! -s "$BT_PID_FILE" ] || ! kill -0 "$(cat "$BT_PID_FILE")" >/dev/null 2>&1; then
-      if [ "$bluetooth_repaired" -eq 0 ]; then
-        echo "[!] 容器内 bluetoothd 已退出，尝试原地修复蓝牙环境。"
-        if "$CONTROL" repair; then
-          bluetooth_repaired=1
-          sleep 3
-          if [ -s "$BT_PID_FILE" ] && kill -0 "$(cat "$BT_PID_FILE")" >/dev/null 2>&1; then
-            echo "[*] 蓝牙环境已原地恢复。"
-            continue
+  while sleep 15; do
+    for service in bluetoothd ofonod bluealsa; do
+      if ! alive_file "$STATE_DIR/$service.pid"; then
+        if [ "$bluetooth_repaired" -eq 0 ]; then
+          echo "[!] $service 已退出，尝试原地修复 HFP 环境。"
+          if "$CONTROL" repair; then
+            bluetooth_repaired=1
+            continue 2
           fi
         fi
+        echo "[!] $service 修复失败或再次退出。"
+        return 1
       fi
-      echo "[!] 蓝牙原地修复失败或再次退出，终止容器以触发完整重启。"
-      return 1
-    fi
+    done
     local phone
-    phone=$(configured_phone_mac)
+    phone=$(python3 -c 'import json,sys; from pathlib import Path; p=Path(sys.argv[1]); print(json.loads(p.read_text()).get("phone_mac", "") if p.exists() else "")' "$STATE_DIR/settings.json" 2>/dev/null || true)
     if [ -n "$phone" ]; then
-      bluetoothctl_command trust "$phone" >/dev/null 2>&1 || true
-      bluetoothctl_command connect "$phone" >/dev/null 2>&1 || true
-      if ! /usr/sbin/asterisk -rx "module show like chan_mobile.so" 2>/dev/null | grep -q 'Running'; then
-        "$CONTROL" reload-mobile >/dev/null 2>&1 || true
-      fi
-    fi
-    if bluetoothctl_command show 2>/dev/null | grep -q 'Discovering: yes' && \
-       [ -n "$phone" ] && bluetoothctl_command info "$phone" 2>/dev/null | grep -q 'Connected: yes'; then
-      bluetoothctl_command scan off >/dev/null 2>&1 || true
+      printf 'trust %s\nconnect %s\nquit\n' "$phone" "$phone" | timeout 15 bluetoothctl >/dev/null 2>&1 || true
     fi
   done
 }
 
-echo "[*] 准备 Asterisk 模块加载策略..."
-if ! grep -Eq '^[[:space:]]*noload[[:space:]]*=>[[:space:]]*chan_mobile\.so' /etc/asterisk/modules.conf; then
-  sed -i '/^\[modules\]$/a noload => chan_mobile.so' /etc/asterisk/modules.conf
+if ! grep -q '^snd_aloop ' /proc/modules; then
+  modprobe snd-aloop
+  LOOPBACK_OWNED=1
 fi
-
-echo "[*] 启动容器内 D-Bus..."
-rm -f /var/run/dbus/pid /var/run/dbus/system_bus_socket
-dbus-daemon --system --fork
-
-echo "[*] 自动接管并修复蓝牙环境..."
-if ! "$CONTROL" repair; then
-  echo "[!] 首次蓝牙修复失败，Web 管理页仍将启动，可使用“一键修复蓝牙环境”重试。"
-fi
-
-if ! wait_for_hci 5; then
-  echo "[!] 当前没有可用蓝牙适配器，继续启动诊断页面。"
-fi
-
-PYTHONPATH=/opt/gateway/app python3 -c \
-  'from gateway_manager import regenerate_saved_config; regenerate_saved_config()' || true
-
-echo "[*] 启动 Web 管理服务..."
-python3 /opt/gateway/app/gateway_manager.py &
-WEB_PID=$!
-
-echo "[*] 启动 Asterisk..."
-/usr/sbin/asterisk -f -vvv &
-ASTERISK_PID=$!
-if ! wait_for_asterisk; then
-  echo "[!] Asterisk 未能在规定时间内就绪。"
+if ! grep -q '^snd_aloop ' /proc/modules; then
+  echo '[!] 无法加载 ALSA Loopback，不能启动双向通话。' >&2
   exit 1
 fi
 
-"$CONTROL" reload-mobile || true
+rm -f /var/run/dbus/pid /var/run/dbus/system_bus_socket
+dbus-daemon --system --fork
+if ! "$CONTROL" repair; then
+  echo '[!] 蓝牙启动失败，Web 诊断页仍将运行。'
+fi
+
+PYTHONPATH=/opt/gateway python3 -c 'from app.gateway_manager import regenerate_saved_config; regenerate_saved_config()'
+
+python3 /opt/gateway/app/gateway_manager.py &
+WEB_PID=$!
+
+/usr/sbin/asterisk -f &
+ASTERISK_PID=$!
+if ! wait_for_asterisk; then
+  echo '[!] Asterisk 未能就绪。' >&2
+  exit 1
+fi
+
+baresip -f "$STATE_DIR/baresip" </dev/null &
+BARESIP_PID=$!
+PYTHONPATH=/opt/gateway python3 /opt/gateway/app/hfp_bridge.py &
+BRIDGE_PID=$!
+echo "$BRIDGE_PID" >"$STATE_DIR/hfp_bridge.pid"
 monitor_gateway &
 MONITOR_PID=$!
 
-# 任一关键进程退出都终止容器，交由 Compose 的重启策略恢复完整服务。
 set +e
-wait -n
-EXIT_STATUS=$?
+wait -n "$WEB_PID" "$ASTERISK_PID" "$BARESIP_PID" "$BRIDGE_PID" "$MONITOR_PID"
+status=$?
 set -e
-
-if ! kill -0 "$WEB_PID" >/dev/null 2>&1; then
-  echo "[!] Web 管理服务意外退出。"
-elif ! kill -0 "$ASTERISK_PID" >/dev/null 2>&1; then
-  echo "[!] Asterisk 意外退出。"
-else
-  echo "[!] 网关自愈监控意外退出。"
-fi
-exit "$EXIT_STATUS"
+echo "[!] 网关关键进程退出，状态码 $status。"
+exit "${status:-1}"
